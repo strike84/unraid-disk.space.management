@@ -9,7 +9,7 @@ ensures media is organized correctly. Primarily for those how use split level.
 Features:
 - Monitors disks based on a defined free space threshold.
 - Moves movies and TV shows to maintain free space.
-- Prioritizes moving smaller TV shows first to be more efficient.
+- Prioritizes moving Movies then smaller TV shows first to be more efficient.
 - Supports multiple media directory locations.
 - Allows for specific disks to be excluded from operations.
 - Uses rsync to preserve permissions, attributes, and hard links.
