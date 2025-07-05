@@ -4,7 +4,7 @@ Unraid disk space management plugin
 Description:
 This plugin automates disk space management on an Unraid server. It monitors
 disks, moves media files from full disks to those with more space, and
-ensures media is organized correctly. Primarily for those how use split level.
+ensures media is organized correctly. Primarily for those who use split-level.
 
 Features:
 - Monitors disks based on a defined free space threshold.
