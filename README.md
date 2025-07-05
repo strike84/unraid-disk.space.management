@@ -1,5 +1,5 @@
 # unraid-disk.space.management
-Unraid disk management plugin
+Unraid disk space management plugin
 
 Description:
 This script automates disk space management on an Unraid server. It monitors
