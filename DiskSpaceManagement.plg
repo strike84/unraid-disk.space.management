@@ -360,7 +360,6 @@ log_message() {
     local message
     message="$(date +'%Y-%m-%d %H:%M:%S') - $1"
     echo "$message"
-    echo "$message" >> "$LOG_FILE"
 }
 
 send_notification() {
@@ -491,9 +490,13 @@ move_folder_rsync() {
 log_message "--- Disk Space Management script starting ---"
 if [ "$DRY_RUN" = "true" ];
 then
+    START_MESSAGE="Dry run started. No files will be moved."
     log_message "*** DRY RUN MODE ENABLED *** No files will be moved."
-    send_notification "Dry run started. No files will be moved."
+else
+    START_MESSAGE="Script run started."
 fi
+send_notification "Disk Space Management - $START_MESSAGE"
+
 mounted_disks=$(df | grep '/mnt/disk[0-9]\+' | awk '{print $NF}' | sort)
 for disk in $mounted_disks;
 do
