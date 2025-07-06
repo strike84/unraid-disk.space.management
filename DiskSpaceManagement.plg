@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.07.05">
+<!ENTITY version "2025.07.06">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 ]>
@@ -48,7 +48,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2024.07.05');
+define('PLUGIN_VERSION', '2025.07.06');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
