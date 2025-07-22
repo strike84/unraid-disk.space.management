@@ -1,7 +1,7 @@
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2024.07.05');
+define('PLUGIN_VERSION', '2025.07.22');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -66,8 +66,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                 unlink($cron_file_path);
             }
         } else {
+            // The script now handles its own logging, so we don't need redirection here.
             $cron_content = "# Auto-generated cron job for DiskSpaceManagement" . PHP_EOL;
-            $cron_content .= "$cron_schedule $command >> " . escapeshellarg($log_file) . " 2>&1" . PHP_EOL;
+            $cron_content .= "$cron_schedule $command" . PHP_EOL;
             file_put_contents($cron_file_path, $cron_content);
         }
         
@@ -154,8 +155,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
 
                 <dt>Cron Schedule</dt>
                 <dd>
-                  <input type="text" name="CRON_SCHEDULE" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>" size="20">
-                  <blockquote class="inline_help"><p>Standard cron format for automatic execution. Enter "disabled" to turn off. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: https://crontab.guru/#0_3_*_*_* It's recommended to set the cron schedule to a time when you know the mover has finished.</p></blockquote>
+                <input type="text" name="CRON_SCHEDULE" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>" size="60"></dd>
+                <blockquote class="inline_help"><p>Standard cron format for automatic execution. Enter "disabled" to turn off. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: https://crontab.guru/#0_3_*_*_* It's recommended to set the cron schedule to a time when you know the mover has finished.</p></blockquote>
                 </dd>
             </dl>
             <div id="buttons" style="margin-top: 20px;">
@@ -166,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     </div>
     <div id="tab-logs" class="tab-content" style="display: none;">
         <h3>Script Log</h3>
-        <p>This log shows the output from the log file specified in the settings. It will auto-refresh every 5 seconds while this tab is active.</p>
+        <p>This log shows the output from the log file specified in the settings. It will auto-refresh every 10 seconds while this tab is active.</p>
         <div id="log-content" class="log-container">Loading log...</div>
     </div>
     <div id="tab-about" class="tab-content" style="display: none;">
@@ -183,6 +184,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
 function showTab(tabName){$('.tab-content').hide();$('#tab-'+tabName).show();$('.tab-button').removeClass('active');$('button[onclick="showTab(\''+tabName+'\')"]').addClass('active');if(tabName==='logs'){updateLog();}}
 function runScript(){$('#progress_iframe_container').show();$('iframe[name="progress_iframe"]').attr('src','/plugins/<?=PLUGIN_NAME?>/run_handler.php');}
 function updateLog(){$.get('/plugins/<?=PLUGIN_NAME?>/log_handler.php',function(data){$('#log-content').text(data).scrollTop($('#log-content')[0].scrollHeight);});}
-setInterval(function(){if($('#tab-logs').is(':visible')){updateLog();}},5000);
+setInterval(function(){if($('#tab-logs').is(':visible')){updateLog();}},10000);
 $(document).ready(function(){showTab('settings');});
 </script>

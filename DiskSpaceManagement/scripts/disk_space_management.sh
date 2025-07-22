@@ -45,7 +45,6 @@ fi
 
 # --- Script Logic ---
 LAST_MOVE_SIZE_GB=0
-mkdir -p "$(dirname "$LOG_FILE")"
 
 log_message() {
     local message
@@ -176,6 +175,15 @@ move_folder_rsync() {
         return 1
     fi
 }
+
+# --- Log File Setup and Execution Redirection ---
+# Ensure the log directory and file exist before any output.
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+# Redirect all subsequent output (stdout & stderr) to be appended to the log file,
+# while also passing it through to the original stdout (for the UI on manual runs).
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 # --- Main Execution ---
 log_message "--- Disk Space Management script starting ---"
