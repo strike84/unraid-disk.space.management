@@ -5,7 +5,7 @@
 <!ENTITY version "2025.07.06">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
-<!ENTITY pluginURL ""https://raw.githubusercontent.com/strike84/unraid-disk.space.management/main/DiskSpaceManagement.plg"">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/main/DiskSpaceManagement.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="fa-hdd-o">
 
