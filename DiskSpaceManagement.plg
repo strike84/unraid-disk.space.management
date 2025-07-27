@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.07.22">
+<!ENTITY version "2025.07.27">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -49,12 +49,14 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.07.22');
+define('PLUGIN_VERSION', '2025.07.27');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
 // Variable to hold a success message after saving
 $update_message = "";
+// Variable to hold a path validation error message
+$path_error_message = "";
 
 // Function to read a setting value and escape it for safe HTML output
 function get_config_val($key, $default = '') {
@@ -65,6 +67,50 @@ function get_config_val($key, $default = '') {
     $value = $config[$key] ?? $default;
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
+
+// Function to validate that library paths exist on at least one disk.
+function validate_paths($path_string) {
+    if (empty(trim($path_string))) {
+        return [];
+    }
+    $invalid_paths = [];
+    $paths = explode(',', $path_string);
+    $disks = glob('/mnt/disk*');
+
+    // If no disks are found (e.g., array offline), we can't validate.
+    // The script itself will log errors if it runs, so we just return no errors here.
+    if (empty($disks) && !is_dir('/mnt/user')) {
+        return [];
+    }
+
+    foreach ($paths as $path) {
+        $trimmed_path = trim($path);
+        if (empty($trimmed_path)) continue;
+
+        // Sanitize path to be relative (removes leading slash if user adds one)
+        $relative_path = ltrim($trimmed_path, '/');
+
+        $path_found = false;
+        // Check across all physical array disks
+        foreach ($disks as $disk) {
+            if (is_dir($disk . '/' . $relative_path)) {
+                $path_found = true;
+                break;
+            }
+        }
+        
+        // As a fallback, check on the user share representation if not found on individual disks
+        if (!$path_found && is_dir('/mnt/user/' . $relative_path)) {
+            $path_found = true;
+        }
+
+        if (!$path_found) {
+            $invalid_paths[] = $trimmed_path;
+        }
+    }
+    return $invalid_paths;
+}
+
 
 // Handle POST request to save settings.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
@@ -77,6 +123,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     
     $new_config = $_POST;
     unset($new_config['save_settings']);
+
+    // --- Path Validation ---
+    $invalid_movie_paths = validate_paths($new_config['MOVIE_DIRS'] ?? '');
+    $invalid_tv_paths = validate_paths($new_config['TV_SHOW_DIRS'] ?? '');
+    
+    $error_messages = [];
+    if (!empty($invalid_movie_paths)) {
+        $error_messages[] = "<b>Warning:</b> The following Movie library paths appear to be invalid or are not found on any disk (check for typos and case-sensitivity): " . htmlspecialchars(implode(', ', $invalid_movie_paths), ENT_QUOTES, 'UTF-8');
+    }
+    if (!empty($invalid_tv_paths)) {
+        $error_messages[] = "<b>Warning:</b> The following TV Show library paths appear to be invalid or are not found on any disk (check for typos and case-sensitivity): " . htmlspecialchars(implode(', ', $invalid_tv_paths), ENT_QUOTES, 'UTF-8');
+    }
+    if (!empty($error_messages)) {
+        $path_error_message = implode('<br>', $error_messages);
+    }
+    // --- End Path Validation ---
 
     // Determine what changed
     $cron_changed = ($old_config['CRON_SCHEDULE'] ?? null) !== ($new_config['CRON_SCHEDULE'] ?? null);
@@ -138,6 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
 <style>
     .log-container { background-color: #2b2b2b; color: #f1f1f1; font-family: monospace; white-space: pre-wrap; word-wrap: break-word; padding: 15px; border-radius: 5px; height: 500px; overflow-y: scroll; border: 1px solid #444; }
     .success-message { padding: 10px; background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; border-radius: 5px; margin-bottom: 15px; }
+    .error-message { padding: 10px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 15px; }
 </style>
 <div id="diskspacemanagement">
     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -153,10 +216,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
         </div>
     <?php endif; ?>
 
+    <?php if (!empty($path_error_message)): ?>
+        <div class="error-message">
+            <?= $path_error_message /* Already HTML-escaped during creation */ ?>
+        </div>
+    <?php endif; ?>
+
     <div class="tabs">
         <button class="tab-button active" onclick="showTab('settings')">Settings</button>
         <button class="tab-button" onclick="showTab('logs')">Logs</button>
         <button class="tab-button" onclick="showTab('about')">About</button>
+        <button class="tab-button" onclick="showTab('changelog')">Changelog</button>
     </div>
 
     <div id="tab-settings" class="tab-content" style="display: block;">
@@ -191,15 +261,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
 
                 <dt>Movie Library Paths</dt>
                 <dd><input type="text" name="MOVIE_DIRS" value="<?= get_config_val('MOVIE_DIRS', 'media/Movies') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/Movies,media/4K_Movies).</p></blockquote>
+                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/Movies,media/4K_Movies). Case-sensitive.</p></blockquote>
 
                 <dt>TV Show Library Paths</dt>
                 <dd><input type="text" name="TV_SHOW_DIRS" value="<?= get_config_val('TV_SHOW_DIRS', 'media/TV') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows</p></blockquote>
+                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows). Case-sensitive.</p></blockquote>
                 
                 <dt>Excluded Disks</dt>
                 <dd><input type="text" name="EXCLUDED_DISKS" value="<?= get_config_val('EXCLUDED_DISKS', '') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of full disk paths to exclude from all operations (e.g. /mnt/disk1,/mnt/disk2).</p></blockquote>
+                <blockquote class="inline_help"><p>Comma-separated list of full disk paths to exclude from all operations (e.g. /mnt/disk1,/mnt/disk2). Case-sensitive.</p></blockquote>
 
                 <dt>Cron Schedule</dt>
                 <dd>
@@ -223,6 +293,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
         <p>For more information about each setting click the help button in the top right corner of the UnRaid web ui. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. It prioritizes to move movies first, then if no movies are found it will go to TV shows and move the shows with the fewest seasons first. It's recommended to set the cron schedule to a time when you know the mover has finished.</p>
         <p><strong>Version:</strong> <?= PLUGIN_VERSION ?></p>
     </div>
+    <div id="tab-changelog" class="tab-content" style="display: none;">
+        <h3>Changelog</h3>
+        <div class="log-container" style="height: auto; max-height: 500px;">
+            <?php
+                $changelog_file = '/usr/local/emhttp/plugins/' . PLUGIN_NAME . '/CHANGELOG.md';
+                if (file_exists($changelog_file)) {
+                    echo htmlspecialchars(file_get_contents($changelog_file));
+                } else {
+                    echo "Changelog file not found.";
+                }
+            ?>
+        </div>
+    </div>
 </div>
 <div id="progress_iframe_container" style="display:none; margin-top:20px;">
     <h3>Script Output</h3>
@@ -235,6 +318,23 @@ function updateLog(){$.get('/plugins/<?=PLUGIN_NAME?>/log_handler.php',function(
 setInterval(function(){if($('#tab-logs').is(':visible')){updateLog();}},10000);
 $(document).ready(function(){showTab('settings');});
 </script>
+]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/&name;/CHANGELOG.md" Mode="0644">
+<INLINE>
+<![CDATA[
+# Changelog
+
+## 2025.07.27
+- Feature: Added validation for Movie and TV Show library paths.
+- UI: An error message is now displayed on the settings page if a path is invalid (case-sensitive).
+- UI: Added changelog button which displays changes.
+- Script: The script now logs a warning and skips invalid paths instead of attempting to use them.
+
+## 2025.07.22
+- Fixed creation of logfile when the script is run manually
 ]]>
 </INLINE>
 </FILE>
@@ -329,10 +429,31 @@ TV_SHOW_DIRS="share/TV"
 EXCLUDED_DISKS=""
 NOTIFY="true"
 
+# --- Log File Setup and Execution Redirection ---
+# Ensure the log directory and file exist before any output.
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+
+# Redirect all subsequent output (stdout & stderr) to be appended to the log file,
+# while also passing it through to the original stdout (for the UI on manual runs).
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+log_message() {
+    local message
+    message="$(date +'%Y-%m-%d %H:%M:%S') - $1"
+    echo "$message"
+}
+
+# --- Main Execution ---
+log_message "--- Disk Space Management script starting ---"
+
 # Load settings from the config file, which will overwrite the defaults if present.
 if [ -f "$CONFIG_FILE" ];
 then
     source "$CONFIG_FILE"
+    log_message "Configuration loaded from $CONFIG_FILE"
+else
+    log_message "WARNING: Configuration file not found. Using default settings."
 fi
 
 # Reformat arrays from config, handling empty settings correctly.
@@ -354,14 +475,58 @@ else
     EXCLUDED_DISKS_ARRAY=()
 fi
 
+# --- Path Validation ---
+log_message "Validating library paths..."
+VALID_MOVIE_DIRS_ARRAY=()
+if [ ${#MOVIE_DIRS_ARRAY[@]} -gt 0 ]; then
+    for dir in "${MOVIE_DIRS_ARRAY[@]}"; do
+        dir_trimmed=$(echo "$dir" | xargs) # Trim leading/trailing whitespace
+        if [ -z "$dir_trimmed" ]; then continue; fi
+        
+        path_exists=false
+        # Check if the directory exists on at least one disk
+        for disk_path in /mnt/disk*; do
+            if [ -d "$disk_path/$dir_trimmed" ]; then
+                path_exists=true
+                break
+            fi
+        done
+
+        if [ "$path_exists" = true ]; then
+            log_message "Path validation PASSED for Movie path: '$dir_trimmed'"
+            VALID_MOVIE_DIRS_ARRAY+=("$dir_trimmed")
+        else
+            log_message "WARNING: Path validation FAILED for Movie path: '$dir_trimmed'. It was not found on any disk and will be skipped."
+        fi
+    done
+fi
+
+VALID_TV_SHOW_DIRS_ARRAY=()
+if [ ${#TV_SHOW_DIRS_ARRAY[@]} -gt 0 ]; then
+    for dir in "${TV_SHOW_DIRS_ARRAY[@]}"; do
+        dir_trimmed=$(echo "$dir" | xargs) # Trim leading/trailing whitespace
+        if [ -z "$dir_trimmed" ]; then continue; fi
+
+        path_exists=false
+        for disk_path in /mnt/disk*; do
+            if [ -d "$disk_path/$dir_trimmed" ]; then
+                path_exists=true
+                break
+            fi
+        done
+
+        if [ "$path_exists" = true ]; then
+            log_message "Path validation PASSED for TV Show path: '$dir_trimmed'"
+            VALID_TV_SHOW_DIRS_ARRAY+=("$dir_trimmed")
+        else
+            log_message "WARNING: Path validation FAILED for TV Show path: '$dir_trimmed'. It was not found on any disk and will be skipped."
+        fi
+    done
+fi
+# --- End Path Validation ---
+
 # --- Script Logic ---
 LAST_MOVE_SIZE_GB=0
-
-log_message() {
-    local message
-    message="$(date +'%Y-%m-%d %H:%M:%S') - $1"
-    echo "$message"
-}
 
 send_notification() {
     if [ "$NOTIFY" = "true" ];
@@ -487,17 +652,6 @@ move_folder_rsync() {
     fi
 }
 
-# --- Log File Setup and Execution Redirection ---
-# Ensure the log directory and file exist before any output.
-mkdir -p "$(dirname "$LOG_FILE")"
-touch "$LOG_FILE"
-
-# Redirect all subsequent output (stdout & stderr) to be appended to the log file,
-# while also passing it through to the original stdout (for the UI on manual runs).
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-# --- Main Execution ---
-log_message "--- Disk Space Management script starting ---"
 if [ "$DRY_RUN" = "true" ];
 then
     START_MESSAGE="Dry run started. No files will be moved."
@@ -524,12 +678,12 @@ do
     log_message "Disk $disk is below the ${THRESHOLD_GB}GB threshold (initial space: ${initial_free_space}GB). Planning moves..."
     
     item_list=$(
-        for dir in "${MOVIE_DIRS_ARRAY[@]}"; do
+        for dir in "${VALID_MOVIE_DIRS_ARRAY[@]}"; do
             find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do
                 echo "1|0|$folder|$dir"
             done
         done
-        for dir in "${TV_SHOW_DIRS_ARRAY[@]}"; do
+        for dir in "${VALID_TV_SHOW_DIRS_ARRAY[@]}"; do
             find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do
                 seasons_count=$(find "$folder" -mindepth 1 -maxdepth 1 -type d | wc -l)
                 echo "2|$seasons_count|$folder|$dir"
@@ -541,7 +695,7 @@ do
     
     if [[ -z "$sorted_item_list" ]];
     then
-        log_message "No movable files found on $disk."
+        log_message "No movable files found on $disk in any of the configured valid library paths."
         continue
     fi
     
