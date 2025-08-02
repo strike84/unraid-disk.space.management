@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.08.02">
+<!ENTITY version "2025.08.02-1">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -13,9 +13,6 @@
 <INLINE>
 # Remove the plugin's directory from RAM. This ensures no old UI files are left behind.
 rm -rf /usr/local/emhttp/plugins/&name;
-
-# Remove the plugin's cron file. The plugin will recreate this later based on current settings.
-rm -rf /boot/config/plugins/dynamix/&name;.cron
 
 </INLINE>
 </FILE>
@@ -40,7 +37,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.08.02');
+define('PLUGIN_VERSION', '2025.08.02-1');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -847,3 +844,4 @@ echo "&name; has been successfully removed."
 </FILE>
 
 </PLUGIN>
+
