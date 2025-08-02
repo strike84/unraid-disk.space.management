@@ -2,18 +2,13 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.07.27">
+<!ENTITY version "2025.08.02">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" icon="fa-hdd-o">
 
-<!--
-  PRE-INSTALL SCRIPT
-  This block is executed by Unraid before install
-  Its purpose is to clean up files from previous versions to ensure a clean installation.
--->
 <FILE Run="/bin/bash">
 <INLINE>
 # Remove the plugin's directory from RAM. This ensures no old UI files are left behind.
@@ -25,10 +20,6 @@ rm -rf /boot/config/plugins/dynamix/&name;.cron
 </INLINE>
 </FILE>
 
-<!--
-  WEB UI FILES
-  These files constitute the plugin's user interface and are installed into RAM.
--->
 <FILE Name="/usr/local/emhttp/plugins/&name;/&name;.page" Mode="0755">
 <INLINE>
 <![CDATA[
@@ -49,7 +40,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.07.27');
+define('PLUGIN_VERSION', '2025.08.02');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -68,6 +59,38 @@ function get_config_val($key, $default = '') {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
+// Function to get a list of all installed data disks
+function get_array_disks() {
+    $disks = [];
+    if (!file_exists('/var/local/emhttp/disks.ini')) {
+        return $disks;
+    }
+    $ini_array = parse_ini_file('/var/local/emhttp/disks.ini', true);
+    
+    $data_disks = [];
+    foreach ($ini_array as $key => $details) {
+        // Only include disks that have a device assigned (i.e., are physically installed)
+        if (strpos($key, 'disk') === 0 && !empty($details['device'])) {
+            preg_match('/(\d+)/', $key, $matches);
+            $disk_num = isset($matches[1]) ? (int)$matches[1] : 999;
+            $name = !empty($details['name']) ? $details['name'] : ucfirst($key);
+            $data_disks[] = [
+                'num' => $disk_num,
+                'label' => $name, 
+                'device' => $details['device'], 
+                'path' => '/mnt/' . $key
+            ];
+        }
+    }
+
+    // Sort data disks by the numeric part of the key
+    usort($data_disks, function($a, $b) {
+        return $a['num'] <=> $b['num'];
+    });
+
+    return $data_disks;
+}
+
 // Function to validate that library paths exist on at least one disk.
 function validate_paths($path_string) {
     if (empty(trim($path_string))) {
@@ -77,8 +100,6 @@ function validate_paths($path_string) {
     $paths = explode(',', $path_string);
     $disks = glob('/mnt/disk*');
 
-    // If no disks are found (e.g., array offline), we can't validate.
-    // The script itself will log errors if it runs, so we just return no errors here.
     if (empty($disks) && !is_dir('/mnt/user')) {
         return [];
     }
@@ -87,11 +108,9 @@ function validate_paths($path_string) {
         $trimmed_path = trim($path);
         if (empty($trimmed_path)) continue;
 
-        // Sanitize path to be relative (removes leading slash if user adds one)
         $relative_path = ltrim($trimmed_path, '/');
-
         $path_found = false;
-        // Check across all physical array disks
+
         foreach ($disks as $disk) {
             if (is_dir($disk . '/' . $relative_path)) {
                 $path_found = true;
@@ -99,7 +118,6 @@ function validate_paths($path_string) {
             }
         }
         
-        // As a fallback, check on the user share representation if not found on individual disks
         if (!$path_found && is_dir('/mnt/user/' . $relative_path)) {
             $path_found = true;
         }
@@ -114,11 +132,18 @@ function validate_paths($path_string) {
 
 // Handle POST request to save settings.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
+    // Convert the EXCLUDED_DISKS array from checkboxes into a comma-separated string.
+    if (isset($_POST['EXCLUDED_DISKS']) && is_array($_POST['EXCLUDED_DISKS'])) {
+        $_POST['EXCLUDED_DISKS'] = implode(',', $_POST['EXCLUDED_DISKS']);
+    } else {
+        // If no checkboxes are checked, ensure the value is an empty string.
+        $_POST['EXCLUDED_DISKS'] = '';
+    }
+
     if (!is_dir(CONFIG_PATH)) {
         mkdir(CONFIG_PATH, 0770, true);
     }
     
-    // Load the old settings for comparison
     $old_config = file_exists(CONFIG_FILE) ? parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW) : [];
     
     $new_config = $_POST;
@@ -140,7 +165,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     }
     // --- End Path Validation ---
 
-    // Determine what changed
     $cron_changed = ($old_config['CRON_SCHEDULE'] ?? null) !== ($new_config['CRON_SCHEDULE'] ?? null);
     
     $old_other_settings = $old_config;
@@ -149,7 +173,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     if (isset($new_other_settings['CRON_SCHEDULE'])) unset($new_other_settings['CRON_SCHEDULE']);
     $other_settings_changed = $old_other_settings !== $new_other_settings;
 
-    // Save the new settings
     $cfg_content = "";
     foreach($new_config as $key => $value) {
         $escaped_value = str_replace('"', '\"', $value);
@@ -157,7 +180,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     }
     file_put_contents(CONFIG_FILE, $cfg_content);
 
-    // Update cron if its schedule changed
     if ($cron_changed) {
         $cron_schedule = $new_config['CRON_SCHEDULE'] ?? '0 3 * * *';
         $log_file = $new_config['LOG_FILE'] ?? '/var/log/diskspacemanagement.log';
@@ -176,7 +198,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                 unlink($cron_file_path);
             }
         } else {
-            // The script now handles its own logging, so we don't need redirection here.
             $cron_content = "# Auto-generated cron job for DiskSpaceManagement" . PHP_EOL;
             $cron_content .= "$cron_schedule $command" . PHP_EOL;
             file_put_contents($cron_file_path, $cron_content);
@@ -185,7 +206,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
         exec("update_cron");
     }
 
-    // Set the appropriate success message
     if ($cron_changed && $other_settings_changed) {
         $update_message = "Settings saved, cron schedule successfully updated.";
     } elseif ($cron_changed) {
@@ -201,6 +221,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     .log-container { background-color: #2b2b2b; color: #f1f1f1; font-family: monospace; white-space: pre-wrap; word-wrap: break-word; padding: 15px; border-radius: 5px; height: 500px; overflow-y: scroll; border: 1px solid #444; }
     .success-message { padding: 10px; background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; border-radius: 5px; margin-bottom: 15px; }
     .error-message { padding: 10px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 15px; }
+    .checkbox-container { background-color: #3a3a3a; border: 1px solid #555; border-radius: 4px; padding: 10px; height: 200px; overflow-y: auto; }
+    .checkbox-container label { display: block; margin-bottom: 5px; font-weight: normal; }
+    #excluded-disks-trigger { background-color: transparent; border-width: 0 0 1px 0; border-style: solid; border-color: #777; padding: 6px 2px; cursor: pointer; min-height: 1.5em; color: #f1f1f1; -webkit-user-select: none; user-select: none; width: 100%; box-sizing: border-box; }
+    #excluded-disks-trigger:hover { border-color: #999; }
+    #excluded-disks-container { margin-top: 5px; }
 </style>
 <div id="diskspacemanagement">
     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -268,8 +293,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                 <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows). Case-sensitive.</p></blockquote>
                 
                 <dt>Excluded Disks</dt>
-                <dd><input type="text" name="EXCLUDED_DISKS" value="<?= get_config_val('EXCLUDED_DISKS', '') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of full disk paths to exclude from all operations (e.g. /mnt/disk1,/mnt/disk2). Case-sensitive.</p></blockquote>
+                <dd>
+                    <?php
+                        $all_disks = get_array_disks();
+                        $excluded_disks_str = get_config_val('EXCLUDED_DISKS', '');
+                        $excluded_disks_array = !empty($excluded_disks_str) ? explode(',', $excluded_disks_str) : [];
+                        
+                        $display_names = [];
+                        if (!empty($excluded_disks_array)) {
+                            foreach ($all_disks as $disk) {
+                                if (in_array($disk['path'], $excluded_disks_array)) {
+                                    $display_names[] = $disk['label'];
+                                }
+                            }
+                        }
+                        $display_str = empty($display_names) ? 'None' : implode(', ', $display_names);
+                    ?>
+                    <div id="excluded-disks-collapsible">
+                        <div id="excluded-disks-trigger" onclick="toggleExcludedDisks()">
+                            <?= htmlspecialchars($display_str, ENT_QUOTES, 'UTF-8') ?>
+                        </div>
+                        <div id="excluded-disks-container" class="checkbox-container" style="display: none;">
+                            <?php
+                                if (empty($all_disks)) {
+                                    echo '<p style="color: #ccc;">No array disks found. Is the array started?</p>';
+                                } else {
+                                    foreach ($all_disks as $disk) {
+                                        $checked = in_array($disk['path'], $excluded_disks_array) ? 'checked' : '';
+                                        echo '<label>';
+                                        echo '<input type="checkbox" name="EXCLUDED_DISKS[]" value="' . htmlspecialchars($disk['path'], ENT_QUOTES, 'UTF-8') . '" ' . $checked . '>';
+                                        echo ' ' . htmlspecialchars($disk['label'], ENT_QUOTES, 'UTF-8') . ' (' . htmlspecialchars($disk['device'], ENT_QUOTES, 'UTF-8') . ')';
+                                        echo '</label>';
+                                    }
+                                }
+                            ?>
+                        </div>
+                    </div>
+                </dd>
+                <blockquote class="inline_help"><p>Select any disks you want the script to completely ignore. Click the field above to expand the list.</p></blockquote>
 
                 <dt>Cron Schedule</dt>
                 <dd>
@@ -315,6 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
 function showTab(tabName){$('.tab-content').hide();$('#tab-'+tabName).show();$('.tab-button').removeClass('active');$('button[onclick="showTab(\''+tabName+'\')"]').addClass('active');if(tabName==='logs'){updateLog();}}
 function runScript(){$('#progress_iframe_container').show();$('iframe[name="progress_iframe"]').attr('src','/plugins/<?=PLUGIN_NAME?>/run_handler.php');}
 function updateLog(){$.get('/plugins/<?=PLUGIN_NAME?>/log_handler.php',function(data){$('#log-content').text(data).scrollTop($('#log-content')[0].scrollHeight);});}
+function toggleExcludedDisks(){$('#excluded-disks-container').slideToggle(200);}
 setInterval(function(){if($('#tab-logs').is(':visible')){updateLog();}},10000);
 $(document).ready(function(){showTab('settings');});
 </script>
@@ -326,6 +388,9 @@ $(document).ready(function(){showTab('settings');});
 <INLINE>
 <![CDATA[
 # Changelog
+
+## 2025.08.02
+-Feature/UI: Added a more user-friendly way to exclude disks by adding checkboxes that the user can click to exclude the disk they want.
 
 ## 2025.07.27
 - Feature: Added validation for Movie and TV Show library paths.
@@ -400,12 +465,10 @@ echo "\n\nScript finished.";
 </INLINE>
 </FILE>
 
-<!-- Create the scripts directory -->
 <EXEC>
 /bin/mkdir -p /usr/local/emhttp/plugins/&name;/scripts
 </EXEC>
 
-<!-- The main shell script -->
 <FILE Name="/usr/local/emhttp/plugins/&name;/scripts/disk_space_management.sh" Mode="0770">
 <INLINE>
 <![CDATA[
@@ -743,10 +806,6 @@ send_notification "Disk Space Management script run finished."
 </INLINE>
 </FILE>
 
-<!--
-  INITIAL SETTINGS FILE CREATION
-  This script creates a default settings file, but ONLY if one doesn't already exist.
--->
 <EXEC>
 if [ ! -f "&plugdir;/settings.cfg" ]; then
   /bin/mkdir -p &plugdir;
@@ -763,10 +822,6 @@ if [ ! -f "&plugdir;/settings.cfg" ]; then
 fi
 </EXEC>
 
-<!--
-  POST-INSTALL SCRIPT
-  This script runs after all the files are installed.
--->
 <FILE Run="/bin/bash">
 <INLINE>
 echo
@@ -778,10 +833,6 @@ echo
 </INLINE>
 </FILE>
 
-<!--
-  PLUGIN REMOVAL SCRIPT
-  This script is executed when the plugin is removed.
--->
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
 echo "Uninstalling &name;..."
