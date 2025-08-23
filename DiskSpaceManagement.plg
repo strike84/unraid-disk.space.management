@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.08.23">
+<!ENTITY version "2025.08.23-2">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -37,7 +37,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.08.23');
+define('PLUGIN_VERSION', '2025.08.23-2');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -243,6 +243,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     }
     #excluded-disks-trigger:hover { border-color: #999; }
     #excluded-disks-container { margin-top: 5px; }
+    dd > .inline_help {
+        margin-left: 0;
+    }
 </style>
 <div id="diskspacemanagement">
     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -276,8 +279,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
             <input type="hidden" name="save_settings" value="true">
             <dl>
                 <dt>Free Space Threshold (GB)</dt>
-                <dd><input type="number" name="THRESHOLD_GB" value="<?= get_config_val('THRESHOLD_GB', '100') ?>" size="5"></dd>
-                <blockquote class="inline_help"><p>The script will start moving files from any disk with free space below this value.</p></blockquote>
+                <dd>
+                    <input type="number" name="THRESHOLD_GB" value="<?= get_config_val('THRESHOLD_GB', '100') ?>" size="5">
+                    <blockquote class="inline_help"><p>The script will start moving files from any disk with free space below this value.</p></blockquote>
+                </dd>
                 
                 <dt>Dry Run</dt>
                 <dd>
@@ -285,8 +290,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                     <option value="true" <?= get_config_val('DRY_RUN', 'true') == 'true' ? 'selected' : '' ?>>Enabled</option>
                     <option value="false" <?= get_config_val('DRY_RUN', 'true') == 'false' ? 'selected' : '' ?>>Disabled</option>
                   </select>
+                  <blockquote class="inline_help"><p>When enabled, the script will log what it would do without actually moving any files. Recommended for testing.</p></blockquote>
                 </dd>
-                <blockquote class="inline_help"><p>When enabled, the script will log what it would do without actually moving any files. Recommended for testing.</p></blockquote>
 
                 <dt>Send Notifications</dt>
                 <dd>
@@ -294,20 +299,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                     <option value="true" <?= get_config_val('NOTIFY', 'true') == 'true' ? 'selected' : '' ?>>Yes</option>
                     <option value="false" <?= get_config_val('NOTIFY', 'true') == 'false' ? 'selected' : '' ?>>No</option>
                   </select>
+                  <blockquote class="inline_help"><p>Send a notification to the Unraid UI when the script starts and finishes.</p></blockquote>
                 </dd>
-                <blockquote class="inline_help"><p>Send a notification to the Unraid UI when the script starts and finishes.</p></blockquote>
 
                 <dt>Log File Path</dt>
-                <dd><input type="text" name="LOG_FILE" value="<?= get_config_val('LOG_FILE', '/var/log/diskspacemanagement.log') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Path to store the script execution log. If you want persistent logs store it on the cache drive or flash drive.</p></blockquote>
+                <dd>
+                    <input type="text" name="LOG_FILE" value="<?= get_config_val('LOG_FILE', '/var/log/diskspacemanagement.log') ?>" size="60">
+                    <blockquote class="inline_help"><p>Path to store the script execution log. If you want persistent logs store it on the cache drive or flash drive.</p></blockquote>
+                </dd>
 
                 <dt>Movie Library Paths</dt>
-                <dd><input type="text" name="MOVIE_DIRS" value="<?= get_config_val('MOVIE_DIRS', 'media/Movies') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/Movies,media/4K_Movies). Case-sensitive.</p></blockquote>
+                <dd>
+                    <input type="text" name="MOVIE_DIRS" value="<?= get_config_val('MOVIE_DIRS', 'media/Movies') ?>" size="60">
+                    <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/Movies,media/4K_Movies). Case-sensitive.</p></blockquote>
+                </dd>
 
                 <dt>TV Show Library Paths</dt>
-                <dd><input type="text" name="TV_SHOW_DIRS" value="<?= get_config_val('TV_SHOW_DIRS', 'media/TV') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows). Case-sensitive.</p></blockquote>
+                <dd>
+                    <input type="text" name="TV_SHOW_DIRS" value="<?= get_config_val('TV_SHOW_DIRS', 'media/TV') ?>" size="60">
+                    <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows). Case-sensitive.</p></blockquote>
+                </dd>
                 
                 <dt>Excluded Disks</dt>
                 <dd>
@@ -346,13 +357,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
                             ?>
                         </div>
                     </div>
+                    <blockquote class="inline_help"><p>Select any disks you want the script to completely ignore. Click the field above to expand the list.</p></blockquote>
                 </dd>
-                <blockquote class="inline_help"><p>Select any disks you want the script to completely ignore. Click the field above to expand the list.</p></blockquote>
 
                 <dt>Cron Schedule</dt>
                 <dd>
-                <input type="text" name="CRON_SCHEDULE" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>" size="60"></dd>
-                <blockquote class="inline_help"><p>Standard cron format for automatic execution. Enter "disabled" to turn off. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: https://crontab.guru/#0_3_*_*_* It's recommended to set the cron schedule to a time when you know the mover has finished.</p></blockquote>
+                    <input type="text" name="CRON_SCHEDULE" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>" size="60">
+                    <blockquote class="inline_help"><p>Standard cron format for automatic execution. Enter "disabled" to turn off. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: https://crontab.guru/#0_3_*_*_* It's recommended to set the cron schedule to a time when you know the mover has finished.</p></blockquote>
                 </dd>
             </dl>
             <div id="buttons" style="margin-top: 20px;">
@@ -407,6 +418,9 @@ $(document).ready(function(){showTab('settings');});
 <INLINE>
 <![CDATA[
 # Changelog
+
+## 2025.08.23-2
+- UI: Corrected the alignment of help text blocks on the settings page.
 
 ## 2025.08.22
 - UI: Added compatibility fixes for Unraid 7.2.0 responsive web GUI.
@@ -782,7 +796,7 @@ do
     
     if [[ -z "$sorted_item_list" ]];
     then
-        log_message "No movable files found on $disk in any of the configured valid library paths."
+        log_message "No movable files found on $disk in any of the configured valid library."
         continue
     fi
     
