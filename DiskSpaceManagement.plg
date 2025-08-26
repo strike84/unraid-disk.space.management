@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.08.23-2">
+<!ENTITY version "2025.08.26">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -37,7 +37,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.08.23-2');
+define('PLUGIN_VERSION', '2025.08.26');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -419,7 +419,12 @@ $(document).ready(function(){showTab('settings');});
 <![CDATA[
 # Changelog
 
-## 2025.08.23-2
+## 2025.08.26
+- Script: Implemented a new temporary logging system. The log snippet sent in notifications is now guaranteed to be from the current run only. The session log is then appended to the main log file.
+- Script: Finalized notification logic. Email/Agent messages are now correctly formatted with plain text and include a log snippet. UI notifications use HTML for rich formatting.
+- Script: Corrected the folder size calculation logic. The script now accurately reports sizes with decimal precision instead of rounding up to the nearest whole number.
+
+## 2025.08.23
 - UI: Corrected the alignment of help text blocks on the settings page.
 
 ## 2025.08.22
@@ -531,13 +536,23 @@ EXCLUDED_DISKS=""
 NOTIFY="true"
 
 # --- Log File Setup and Execution Redirection ---
-# Ensure the log directory and file exist before any output.
-mkdir -p "$(dirname "$LOG_FILE")"
-touch "$LOG_FILE"
+# Load settings from the config file ONLY to get the LOG_FILE path before setting up logs.
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
 
-# Redirect all subsequent output (stdout & stderr) to be appended to the log file,
+# Ensure the persistent log directory exists.
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# Create a temporary log file for the current session.
+TEMP_LOG_FILE=$(mktemp)
+
+# Set a trap to ensure the temporary log file is removed on script exit.
+trap 'rm -f "$TEMP_LOG_FILE"' EXIT
+
+# Redirect all subsequent output (stdout & stderr) to be appended to the temporary log file,
 # while also passing it through to the original stdout (for the UI on manual runs).
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec > >(tee -a "$TEMP_LOG_FILE") 2>&1
 
 log_message() {
     local message
@@ -546,13 +561,24 @@ log_message() {
 }
 
 # --- Main Execution ---
+SCRIPT_START_TIME=$(date +"%Y-%m-%d %H:%M:%S")
+TOTAL_MOVED_GB=0
+MOVE_COUNT=0
+declare -A MOVED_FROM_TO_GB
+declare -A DISK_FINAL_FREE_SPACE
+
 log_message "--- Disk Space Management script starting ---"
+log_message "Session log: $TEMP_LOG_FILE"
 
 # Load settings from the config file, which will overwrite the defaults if present.
 if [ -f "$CONFIG_FILE" ];
 then
     source "$CONFIG_FILE"
     log_message "Configuration loaded from $CONFIG_FILE"
+
+    # Sanitize variables to remove potential carriage returns from Windows-edited files
+    NOTIFY=$(echo "$NOTIFY" | tr -d '\r')
+    DRY_RUN=$(echo "$DRY_RUN" | tr -d '\r')
 else
     log_message "WARNING: Configuration file not found. Using default settings."
 fi
@@ -585,7 +611,6 @@ if [ ${#MOVIE_DIRS_ARRAY[@]} -gt 0 ]; then
         if [ -z "$dir_trimmed" ]; then continue; fi
         
         path_exists=false
-        # Check if the directory exists on at least one disk
         for disk_path in /mnt/disk*; do
             if [ -d "$disk_path/$dir_trimmed" ]; then
                 path_exists=true
@@ -629,13 +654,6 @@ fi
 # --- Script Logic ---
 LAST_MOVE_SIZE_GB=0
 
-send_notification() {
-    if [ "$NOTIFY" = "true" ];
-then
-        /usr/local/emhttp/plugins/dynamix/scripts/notify -s "Disk Space Management" -d "$1"
-    fi
-}
-
 is_disk_excluded() {
     local disk_to_check="$1"
     if [ ${#EXCLUDED_DISKS_ARRAY[@]} -eq 0 ]; then
@@ -656,12 +674,19 @@ is_disk_excluded() {
     return 1
 }
 
+send_notification() {
+    if [ "$NOTIFY" = "true" ]; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "ERROR" -d "$1" -l "/Settings/DiskSpaceManagement"
+    fi
+}
+
 get_folder_size_gb() {
     local folder_path="$1"
     local size_gb
-    size_gb=$(du -sBG "$folder_path" 2>/dev/null | awk '{print $1}' | tr -d 'G')
+    # Get size in kilobytes and use awk to divide for a precise GB value
+    size_gb=$(du -sk "$folder_path" 2>/dev/null | awk '{printf "%.2f", $1 / 1048576}')
     if ! [[ "$size_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        echo "0"
+        echo "0.00"
     else
         echo "$size_gb"
     fi
@@ -676,8 +701,7 @@ is_disk_almost_full() {
     if ! [[ "$simulated_freed_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then simulated_freed_space=0; fi
     local comparison
     comparison=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur + sim < thold) }')
-    if [[ "$comparison" -eq 1 ]];
-    then
+    if [[ "$comparison" -eq 1 ]]; then
         return 0
     else
         return 1
@@ -695,18 +719,15 @@ find_target_disk() {
         disk_path=$(echo "$line" | awk '{print $NF}')
         free_space_gb=$(echo "$line" | awk '{print $4}' | tr -d 'G')
         if ! [[ "$free_space_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then continue; fi
-        if [[ "$disk_path" == "$source_disk" ]];
-        then
+        if [[ "$disk_path" == "$source_disk" ]]; then
             continue
         fi
-        if is_disk_excluded "$disk_path";
-        then
+        if is_disk_excluded "$disk_path"; then
             continue
         fi
         local is_greater
         is_greater=$(awk -v f1="$free_space_gb" -v f2="$max_free_space" 'BEGIN { print (f1 > f2) }')
-        if [ "$is_greater" -eq 1 ];
-        then
+        if [ "$is_greater" -eq 1 ]; then
             max_free_space=$free_space_gb
             best_disk=$disk_path
         fi
@@ -721,28 +742,25 @@ move_folder_rsync() {
     source_folder_name=$(basename "$source_path")
     local full_target_path="$target_dir/$source_folder_name"
     LAST_MOVE_SIZE_GB=0
-    if [[ ! -d "$target_dir" ]]; then
-        log_message "Creating target directory: $target_dir"
-        if [ "$DRY_RUN" = "false" ];
-        then
-            mkdir -p "$target_dir"
-            chown nobody:users "$target_dir"
-        fi
-    fi
-    local rsync_cmd="rsync -aH --remove-source-files \"$source_path/\" \"$full_target_path/\""
-    if [ "$DRY_RUN" = "true" ];
-    then
-        local folder_size_gb
-        folder_size_gb=$(get_folder_size_gb "$source_path")
+    
+    local folder_size_gb
+    folder_size_gb=$(get_folder_size_gb "$source_path")
+    LAST_MOVE_SIZE_GB=$folder_size_gb
+
+    if [ "$DRY_RUN" = "true" ]; then
         log_message "[DRY RUN] Would move: '$source_path' ($folder_size_gb GB) to '$full_target_path'"
-        log_message "[DRY RUN] Would execute: $rsync_cmd"
-        LAST_MOVE_SIZE_GB=$folder_size_gb
         return 0
     fi
-    log_message "Preparing to move: '$source_path' to '$full_target_path'"
-    log_message "Executing: $rsync_cmd"
-    if eval "$rsync_cmd";
-    then
+    
+    if [[ ! -d "$target_dir" ]]; then
+        log_message "Creating target directory: $target_dir"
+        mkdir -p "$target_dir"
+        chown nobody:users "$target_dir"
+    fi
+
+    log_message "Preparing to move: '$source_path' ($folder_size_gb GB) to '$full_target_path'"
+    
+    if rsync -aH --remove-source-files "$source_path/" "$full_target_path/"; then
         log_message "Successfully moved '$source_path' to '$full_target_path'"
         rm -rf "$source_path"
         return 0
@@ -753,14 +771,9 @@ move_folder_rsync() {
     fi
 }
 
-if [ "$DRY_RUN" = "true" ];
-then
-    START_MESSAGE="Dry run started. No files will be moved."
+if [ "$DRY_RUN" = "true" ]; then
     log_message "*** DRY RUN MODE ENABLED *** No files will be moved."
-else
-    START_MESSAGE="Script run started."
 fi
-send_notification "Disk Space Management - $START_MESSAGE"
 
 mounted_disks=$(df | grep '/mnt/disk[0-9]\+' | awk '{print $NF}' | sort)
 for disk in $mounted_disks;
@@ -772,17 +785,14 @@ do
     if ! is_disk_almost_full "$disk"; then
         continue
     fi
+    
     initial_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
-     if ! [[ "$initial_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        initial_free_space="N/A"
-    fi
+    if ! [[ "$initial_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then initial_free_space="N/A"; fi
     log_message "Disk $disk is below the ${THRESHOLD_GB}GB threshold (initial space: ${initial_free_space}GB). Planning moves..."
     
     item_list=$(
         for dir in "${VALID_MOVIE_DIRS_ARRAY[@]}"; do
-            find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do
-                echo "1|0|$folder|$dir"
-            done
+            find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do echo "1|0|$folder|$dir"; done
         done
         for dir in "${VALID_TV_SHOW_DIRS_ARRAY[@]}"; do
             find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do
@@ -791,55 +801,128 @@ do
             done
         done
     )
-
     sorted_item_list=$(echo "$item_list" | sort -t'|' -k1,1n -k2,2n)
     
-    if [[ -z "$sorted_item_list" ]];
-    then
-        log_message "No movable files found on $disk in any of the configured valid library."
+    if [[ -z "$sorted_item_list" ]]; then
+        log_message "No movable files found on $disk in any of the configured valid library paths."
         continue
     fi
     
     simulated_freed_space_gb=0
+    total_moved_from_this_disk=0
     target_disk=$(find_target_disk "$disk")
     
-    if [[ -z "$target_disk" ]];
-    then
+    if [[ -z "$target_disk" ]]; then
         log_message "No suitable target disk found for source $disk."
         continue
     fi
     log_message "Best target disk found: $target_disk"
 
     while IFS='|' read -r priority sort_key folder_path target_base_dir; do
-        if ! is_disk_almost_full "$disk" "$simulated_freed_space_gb";
-        then
+        if ! is_disk_almost_full "$disk" "$simulated_freed_space_gb"; then
             current_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
             if ! [[ "$current_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then current_free_space=0; fi
-            effective_space=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { print cur + sim }')
+            effective_space=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { printf "%.2f", cur + sim }')
             log_message "Disk $disk is now above the threshold (effective space: ${effective_space}GB). Halting moves for this disk."
             break
         fi
-        if [[ -z "$folder_path" ]];
-        then continue; fi
-        if [[ "$priority" -eq 2 ]];
-        then
-             log_message "Found TV show: '$(basename "$folder_path")' with $sort_key seasons."
-        fi
-        if [ "$DRY_RUN" = "true" ];
-        then
-            move_folder_rsync "$folder_path" "$target_disk/$target_base_dir"
-            size_moved=$LAST_MOVE_SIZE_GB
-            simulated_freed_space_gb=$(awk -v cur="${simulated_freed_space_gb:-0}" -v moved="${size_moved:-0}" 'BEGIN { print cur + moved }')
+        if [[ -z "$folder_path" ]]; then continue; fi
+        
+        if move_folder_rsync "$folder_path" "$target_disk/$target_base_dir"; then
+            size_moved_gb=$LAST_MOVE_SIZE_GB
+            simulated_freed_space_gb=$(awk -v cur="${simulated_freed_space_gb:-0}" -v moved="${size_moved_gb:-0}" 'BEGIN { print cur + moved }')
+            
+            # Aggregate data for global summary
+            TOTAL_MOVED_GB=$(awk -v total="$TOTAL_MOVED_GB" -v moved="$size_moved_gb" 'BEGIN { print total + moved }')
+            ((MOVE_COUNT++))
+            total_moved_from_this_disk=$(awk -v total="$total_moved_from_this_disk" -v moved="$size_moved_gb" 'BEGIN { print total + moved }')
+
+            # Aggregate data for the per-disk summary
+            source_disk_name=$(basename "$disk")
+            target_disk_name=$(basename "$target_disk")
+            move_key="${source_disk_name}->${target_disk_name}"
+            MOVED_FROM_TO_GB[$move_key]=$(awk -v current="${MOVED_FROM_TO_GB[$move_key]:-0}" -v moved="$size_moved_gb" 'BEGIN { print current + moved }')
         else
-            if ! move_folder_rsync "$folder_path" "$target_disk/$target_base_dir"; then
+            if [ "$DRY_RUN" = "false" ]; then
                 log_message "A real move failed. Stopping further moves from $disk."
                 break
             fi
         fi
     done <<< "$sorted_item_list"
+
+    if (( $(echo "$total_moved_from_this_disk > 0" | bc -l) )); then
+        source_disk_name=$(basename "$disk")
+        final_free_space=""
+        if [ "$DRY_RUN" = "true" ]; then
+            current_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
+            final_free_space=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { printf "%.2f", cur + sim }')
+        else
+            final_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
+        fi
+        DISK_FINAL_FREE_SPACE[$source_disk_name]=$final_free_space
+    fi
 done
+
+# --- Final Summary and Notification ---
+SCRIPT_END_TIME=$(date +"%Y-%m-%d %H:%M:%S")
 log_message "--- Disk Space Management script finished ---"
-send_notification "Disk Space Management script run finished."
+
+if [ "$NOTIFY" = "true" ]; then
+    ui_message_body=""
+    agent_message_body=""
+
+    if [ "$MOVE_COUNT" -gt 0 ]; then
+        s_char="s"; [ "$MOVE_COUNT" -eq 1 ] && s_char=""
+        
+        # Build HTML summary for the UI notification
+        disk_summary_html=""
+        for key in "${!MOVED_FROM_TO_GB[@]}"; do
+            source=${key%->*}
+            target=${key#*->}
+            total_gb=${MOVED_FROM_TO_GB[$key]}
+            final_space=${DISK_FINAL_FREE_SPACE[$source]}
+            disk_summary_html+=$(printf -- " - Moved %.2fGB from %s to %s. New free space on %s is %.2fGB.<br>" "$total_gb" "$source" "$target" "$source" "$final_space")
+        done
+        
+        ui_message_body=$(printf "Run finished. Total moved: %.2fGB in %d item%s.<br><br>" "$TOTAL_MOVED_GB" "$MOVE_COUNT" "$s_char")
+        if [ "$DRY_RUN" = "true" ]; then
+            ui_message_body+="<b>DRY RUN: No files were actually moved.</b><br><br>"
+        fi
+        ui_message_body+=$(printf "Start: %s<br>End:   %s<br><br><b>--- Disk Summary ---</b><br>%s" \
+                             "$SCRIPT_START_TIME" "$SCRIPT_END_TIME" "$disk_summary_html")
+
+        # Build plain text summary for notification agents
+        agent_message_body=$(
+            if [ "$DRY_RUN" = "true" ]; then
+                echo -e "DRY RUN: No files were actually moved.\n"
+            fi
+            echo -e "Start: $SCRIPT_START_TIME\nEnd:   $SCRIPT_END_TIME\n"
+            echo -e "--- Disk Summary ---"
+            for key in "${!MOVED_FROM_TO_GB[@]}"; do
+                source=${key%->*}
+                target=${key#*->}
+                total_gb=${MOVED_FROM_TO_GB[$key]}
+                final_space=${DISK_FINAL_FREE_SPACE[$source]}
+                printf -- " - Moved %.2fGB from %s to %s. New free space on %s is %.2fGB.\n" "$total_gb" "$source" "$target" "$source" "$final_space"
+            done
+        )
+    else
+        ui_message_body=$(printf "Run finished. No files were moved.<br>Start: %s<br>End:   %s" \
+                             "$SCRIPT_START_TIME" "$SCRIPT_END_TIME")
+        agent_message_body=$(printf "Run finished. No files were moved.\n\nStart: %s\nEnd:   %s" \
+                                 "$SCRIPT_START_TIME" "$SCRIPT_END_TIME")
+    fi
+
+    # Append the tail of the log to the agent message
+    agent_message_body+=$'\n\n--- Log Snippet (Last 200 Lines) ---\n'
+    agent_message_body+=$(tail -n 200 "$TEMP_LOG_FILE")
+    
+    # Send the notification
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "Run Summary" -d "$ui_message_body" -m "$agent_message_body"
+fi
+
+# Append the temporary session log to the persistent main log file.
+cat "$TEMP_LOG_FILE" >> "$LOG_FILE"
 ]]>
 </INLINE>
 </FILE>
