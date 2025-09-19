@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.09.01-3">
+<!ENTITY version "2025.09.19">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -37,7 +37,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.09.01-3');
+define('PLUGIN_VERSION', '2025.09.19');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -478,6 +478,10 @@ $(document).ready(function(){showTab('settings');});
 <![CDATA[
 # Changelog
 
+## 2025-09-19
+- Script: Changed the script to use base-10 units so the space reproted matches the webui more correctly.
+- Script: Fixed calculation of effective space.
+
 ## 2025.09.01-3
 - Script: Fixed alphabetical sorting to be case-insensitive (e.g., 'A' and 'a' are treated equally).
 
@@ -742,20 +746,43 @@ is_disk_excluded() {
 
 get_folder_size_gb() {
     local folder_path="$1"
-    local size_gb
-    size_gb=$(du -sBG "$folder_path" 2>/dev/null | awk '{print $1}' | tr -d 'G')
-    if ! [[ "$size_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then echo "0"; else echo "$size_gb"; fi
+    local size_bytes
+    # Get total size in bytes using 'du -sb'.
+    size_bytes=$(du -sb "$folder_path" 2>/dev/null | awk '{print $1}')
+
+    # Check if we got a valid number.
+    if ! [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
+        echo "0"
+        return
+    fi
+
+    # Calculate GB using awk for floating point math (1 GB = 1,000,000,000 Bytes).
+    awk -v bytes="$size_bytes" 'BEGIN { printf "%.4f", bytes / 1000000000 }'
+}
+
+# Gets disk free space in GB (10^9 bytes), consistent with Unraid's UI.
+get_disk_free_gb() {
+    local disk_path="$1"
+    local free_bytes
+    # Get available space in bytes from df. Use -B1 for byte-count.
+    # Use tail -n 1 to get just the number, skipping the header.
+    free_bytes=$(df --output=avail -B1 "$disk_path" 2>/dev/null | tail -n 1)
+    
+    # Check if we got a valid number.
+    if ! [[ "$free_bytes" =~ ^[0-9]+$ ]]; then
+        echo "0"
+        return
+    fi
+
+    # Calculate GB using awk for floating point math (1 GB = 1,000,000,000 Bytes).
+    awk -v bytes="$free_bytes" 'BEGIN { print bytes / 1000000000 }'
 }
 
 is_disk_almost_full() {
-    local disk="$1"
+    local base_free_space="$1"
     local simulated_freed_space=${2:-0}
-    local current_free_space
-    current_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
-    if ! [[ "$current_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then current_free_space=0; fi
-    if ! [[ "$simulated_freed_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then simulated_freed_space=0; fi
     local comparison
-    comparison=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur + sim < thold) }')
+    comparison=$(awk -v cur="$base_free_space" -v sim="$simulated_freed_space" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur + sim < thold) }')
     if [[ "$comparison" -eq 1 ]]; then return 0; else return 1; fi
 }
 
@@ -763,22 +790,27 @@ find_target_disk() {
     local source_disk="$1"
     local best_disk=""
     local max_free_space=0
-    while IFS= read -r line;
-    do
-        local disk_path
+    
+    # Iterate over all mounted data disks to find the one with the most free space.
+    for disk_path in /mnt/disk[0-9]*; do
+        # Skip if not a directory (e.g. pattern doesn't match anything)
+        [ -d "$disk_path" ] || continue
+
         local free_space_gb
-        disk_path=$(echo "$line" | awk '{print $NF}')
-        free_space_gb=$(echo "$line" | awk '{print $4}' | tr -d 'G')
+        free_space_gb=$(get_disk_free_gb "$disk_path")
+        
         if ! [[ "$free_space_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then continue; fi
         if [[ "$disk_path" == "$source_disk" ]]; then continue; fi
         if is_disk_excluded "$disk_path"; then continue; fi
+        
         local is_greater
         is_greater=$(awk -v f1="$free_space_gb" -v f2="$max_free_space" 'BEGIN { print (f1 > f2) }')
+        
         if [ "$is_greater" -eq 1 ]; then
             max_free_space=$free_space_gb
             best_disk=$disk_path
         fi
-    done < <(df -BG | grep '/mnt/disk[0-9]\+')
+    done
     echo "$best_disk"
 }
 
@@ -830,11 +862,11 @@ do
         continue
     fi
     
-    if ! is_disk_almost_full "$disk"; then
+    initial_free_space=$(get_disk_free_gb "$disk")
+    if ! is_disk_almost_full "$initial_free_space"; then
         continue
     fi
     
-    initial_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
     if ! [[ "$initial_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then initial_free_space="0"; fi
     log_message "Disk $disk is below the ${THRESHOLD_GB}GB threshold (initial space: ${initial_free_space}GB). Planning moves..."
 
@@ -942,11 +974,9 @@ do
     log_message "Best target disk found: $target_disk"
 
     while IFS='|' read -r priority sort_key folder_path target_base_dir; do
-        if ! is_disk_almost_full "$disk" "$simulated_freed_space_gb";
+        if ! is_disk_almost_full "$initial_free_space" "$simulated_freed_space_gb";
         then
-            current_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
-            if ! [[ "$current_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then current_free_space=0; fi
-            effective_space=$(awk -v cur="$current_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { print cur + sim }')
+            effective_space=$(awk -v cur="$initial_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { print cur + sim }')
             log_message "Disk $disk is now above the threshold (effective space: ${effective_space}GB). Halting moves for this disk."
             break
         fi
@@ -983,7 +1013,7 @@ do
             log_message "Performing final free space measurement for $disk..."
             sync
             sleep 2
-            final_free_space=$(df -BG "$disk" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')
+            final_free_space=$(get_disk_free_gb "$disk")
         fi
         
         DISK_FINAL_FREE_SPACE[$source_disk_name]=$final_free_space
