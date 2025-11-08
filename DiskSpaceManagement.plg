@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.09.19">
+<!ENTITY version "2025.11.08">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -37,7 +37,7 @@ require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
 <?php
 // Define constants
 define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.09.19');
+define('PLUGIN_VERSION', '2025.11.08');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
 
@@ -440,7 +440,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
     </div>
     <div id="tab-about" class="tab-content" style="display: none;">
         <h3>About Disk Space Management</h3>
-        <p>For more information about each setting click the help button in the top right corner of the UnRaid web ui. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. It prioritizes to move movies first, then if no movies are found it will go to TV shows and move the shows with the fewest seasons first. It's recommended to set the cron schedule to a time when you know the mover has finished.</p>
+        <p>For more information about each setting click the help button in the top right corner of the UnRaid web ui. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. You can customize the order of which "library" gets moved first, and also the order to sort them to determine which folders get moved first. It's recommended to set the cron schedule to a time when you know the mover has finished.</p>
         <p><strong>Version:</strong> <?= PLUGIN_VERSION ?></p>
     </div>
     <div id="tab-changelog" class="tab-content" style="display: none;">
@@ -477,6 +477,9 @@ $(document).ready(function(){showTab('settings');});
 <INLINE>
 <![CDATA[
 # Changelog
+
+## 2025.11.08
+- Script: An attempt to fix the "user share caching issue", where the FUSE user share system is not updated to reflect the files new location. This fix will now automatically trigger a "cache refresh" after each successful file move, ensuring the file is immediately visible in the user share.
 
 ## 2025-09-19
 - Script: Changed the script to use base-10 units so the space reproted matches the webui more correctly.
@@ -842,6 +845,19 @@ move_folder_rsync() {
     if rsync -aH --remove-source-files "$source_path/" "$full_target_path/"; then
         log_message "Successfully moved '$source_path' to '$full_target_path'"
         rm -rf "$source_path"
+
+        # --- BEGIN FIX for User Share Caching Issue ---
+        # Force the UserFS to update its cache by touching a temp file in the parent directory.
+        # This makes the moved file immediately visible on the /mnt/user share.
+        local user_share_parent_dir
+        user_share_parent_dir=$(dirname "$full_target_path" | sed 's|^/mnt/disk[0-9]*/|/mnt/user/|')
+        
+        if [ -d "$user_share_parent_dir" ]; then
+            log_message "Triggering User Share cache update for '$user_share_parent_dir'"
+            touch "${user_share_parent_dir}/.dsm_update" && rm "${user_share_parent_dir}/.dsm_update"
+        fi
+        # --- END FIX ---
+
         return 0
     else
         log_message "ERROR: rsync failed to move '$source_path'. See rsync output above."
