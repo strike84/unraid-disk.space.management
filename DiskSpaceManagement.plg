@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.12.31-2">
+<!ENTITY version "2025.12.31-3">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -50,6 +50,9 @@ if (function_exists('render_dsm_ui')) {
 <INLINE>
 <![CDATA[
 # Changelog
+## 2025.12.31-3
+- Engine: Replaced 'bc' dependency with 'awk' for better compatibility across Unraid versions. 
+
 ## 2025.12.31
 🚀 Major Engine & Logic Overhaul
 - Unified Path Management: Replaced the rigid "Movie/TV/Other" category system with a flexible Folder Priority Queue.
@@ -66,6 +69,7 @@ if (function_exists('render_dsm_ui')) {
 - FUSE Loop Prevention: Integrated a safety guard to prevent the script from getting stuck in loops during Dry Runs by tracking simulated processed paths.
 - Critical Safety Guard: Added an explicit check to block /mnt/user from being used as a source or destination, preventing potential data loss from "User Share to Disk" move errors.
 - Fiexed bugs and updated code to comply with unRAIDS security guidelines for plugins.
+
 
 🎨 UI & UX Enhancements
 - Modernized Interface: Completely redesigned the settings page with a dark-themed, grid-based layout using the "Inter" font.
@@ -134,7 +138,7 @@ if (function_exists('render_dsm_ui')) {
 define('PLUGIN_NAME', 'DiskSpaceManagement');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-define('PLUGIN_VERSION', '2025.12.31-2');
+define('PLUGIN_VERSION', '2025.12.31-3');
 
 if (!isset($var)) {
     $var = parse_ini_file('/var/local/emhttp/var.ini');
@@ -410,7 +414,7 @@ function render_dsm_ui() {
         <div id="tab-about" class="tab-content">
             <div class="dsm-card">
                 <div class="dsm-card-title"><i class="fa fa-info-circle"></i> About DSM</div>
-                <p>Disk Space Management intelligently balances Unraid array. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. You can customize the order of which folders gets moved first, and also the order to sort them to determine which folders get moved first. It's recommended to set the cron schedule to a time when you know the mover has finished..</p>
+                <p>Disk Space Management intelligently balances Unraid array. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move folders from disks that are below the threshold setting to the disk with the most free space available. You can customize the order of which folders gets moved first, and also the order to sort them to determine which folders get moved first. It's recommended to set the cron schedule to a time when you know the mover has finished.</p>
             </div>
         </div>
     </div>
@@ -640,8 +644,15 @@ MOVE_COUNT=0
 SIMULATED_PROCESSED_PATHS=""
 
 log_msg() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $1"; }
-get_free_gb() { df --output=avail -B1 "$1" | tail -n 1 | awk '{printf "%.4f", $1 / 1000000000}'; }
-get_folder_size_gb() { du -sb "$1" 2>/dev/null | awk '{printf "%.4f", $1 / 1000000000}'; }
+
+# Reverted to using awk for GB calculations to remove 'bc' dependency
+get_free_gb() { 
+    df --output=avail -B1 "$1" | tail -n 1 | awk '{printf "%.4f", $1 / 1000000000}'
+}
+
+get_folder_size_gb() { 
+    du -sb "$1" 2>/dev/null | awk '{printf "%.4f", $1 / 1000000000}'
+}
 
 check_path_safety() {
     if [[ "$1" == *"/mnt/user/"* ]] || [[ "$2" == *"/mnt/user/"* ]]; then
@@ -661,7 +672,9 @@ find_target_disk() {
     for disk in /mnt/disk[0-9]*; do
         [[ "$disk" == "$src" ]] || [[ ",$EXCLUDED_DISKS," == *",$disk,"* ]] || [[ ",$exclusions," == *",$disk,"* ]] && continue
         local free=${DISK_SIMULATED_FREE[$(basename "$disk")]}
-        if (( $(echo "$free > $max" | bc -l) )); then max=$free; best=$disk; fi
+        # Reverted to awk for comparison
+        local is_greater=$(awk -v f1="$free" -v f2="$max" 'BEGIN { print (f1 > f2) }')
+        if [ "$is_greater" -eq 1 ]; then max=$free; best=$disk; fi
     done
     echo "$best"
 }
@@ -681,11 +694,14 @@ for disk in /mnt/disk[0-9]*; do
     fi
 
     initial_free=$(get_free_gb "$disk")
-    if (( $(echo "$initial_free < $THRESHOLD_GB" | bc -l) )); then
+    # Reverted to awk for threshold check
+    is_below=$(awk -v cur="$initial_free" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur < thold) }')
+    if [ "$is_below" -eq 1 ]; then
         log_msg "Disk $D_NAME is below threshold. Free: ${initial_free}GB."
         while true; do
             curr_sim_free=${DISK_SIMULATED_FREE[$D_NAME]}
-            if (( $(echo "$curr_sim_free >= $THRESHOLD_GB" | bc -l) )); then
+            is_now_above=$(awk -v cur="$curr_sim_free" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur >= thold) }')
+            if [ "$is_now_above" -eq 1 ]; then
                 log_msg "Disk $D_NAME is now above threshold (${curr_sim_free}GB). Stopping moves."
                 break
             fi
@@ -731,10 +747,16 @@ for disk in /mnt/disk[0-9]*; do
                             if [ -z "$(ls -A "$item")" ]; then rm -rf "$item"; refresh_user_share "$dst"; fi
                         fi
                     fi
-                    TOTAL_MOVED_GB=$(echo "$TOTAL_MOVED_GB + $size" | bc -l); ((MOVE_COUNT++))
-                    DISK_SIMULATED_FREE[$D_NAME]=$(echo "${DISK_SIMULATED_FREE[$D_NAME]} + $size" | bc -l)
-                    DISK_SIMULATED_FREE[$(basename "$target")]=$(echo "${DISK_SIMULATED_FREE[$(basename "$target")]} - $size" | bc -l)
-                    key="${D_NAME}->$(basename "$target")"; MOVED_FROM_TO_GB[$key]=$(echo "${MOVED_FROM_TO_GB[$key]:-0} + $size" | bc -l)
+                    
+                    # Calculations reverted to awk
+                    TOTAL_MOVED_GB=$(awk -v cur="$TOTAL_MOVED_GB" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                    ((MOVE_COUNT++))
+                    DISK_SIMULATED_FREE[$D_NAME]=$(awk -v cur="${DISK_SIMULATED_FREE[$D_NAME]}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                    DISK_SIMULATED_FREE[$(basename "$target")]=$(awk -v cur="${DISK_SIMULATED_FREE[$(basename "$target")]}" -v sz="$size" 'BEGIN { printf "%.4f", cur - sz }')
+                    
+                    key="${D_NAME}->$(basename "$target")"
+                    MOVED_FROM_TO_GB[$key]=$(awk -v cur="${MOVED_FROM_TO_GB[$key]:-0}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                    
                     found_move=true; break
                 fi
             done
@@ -773,4 +795,3 @@ fi
 ]]>
 </EXEC>
 </PLUGIN>
-
