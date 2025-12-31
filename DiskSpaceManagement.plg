@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.12.31">
+<!ENTITY version "2025.12.31-2">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -134,7 +134,7 @@ if (function_exists('render_dsm_ui')) {
 define('PLUGIN_NAME', 'DiskSpaceManagement');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-define('PLUGIN_VERSION', '2025.12.31');
+define('PLUGIN_VERSION', '2025.12.31-2');
 
 if (!isset($var)) {
     $var = parse_ini_file('/var/local/emhttp/var.ini');
@@ -410,7 +410,7 @@ function render_dsm_ui() {
         <div id="tab-about" class="tab-content">
             <div class="dsm-card">
                 <div class="dsm-card-title"><i class="fa fa-info-circle"></i> About DSM</div>
-                <p>Disk Space Management balances Unraid array usage while respecting folder structures. Best for split-level users.</p>
+                <p>Disk Space Management intelligently balances Unraid array. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. You can customize the order of which folders gets moved first, and also the order to sort them to determine which folders get moved first. It's recommended to set the cron schedule to a time when you know the mover has finished..</p>
             </div>
         </div>
     </div>
@@ -773,3 +773,4 @@ fi
 ]]>
 </EXEC>
 </PLUGIN>
+
