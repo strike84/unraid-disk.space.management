@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2025.11.08">
+<!ENTITY version "2025.12.31">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -11,9 +11,21 @@
 
 <FILE Run="/bin/bash">
 <INLINE>
-# Remove the plugin's directory from RAM. This ensures no old UI files are left behind.
+# Prepare plugin environment
 rm -rf /usr/local/emhttp/plugins/&name;
+mkdir -p /usr/local/emhttp/plugins/&name;/scripts
+mkdir -p &plugdir;
+</INLINE>
+</FILE>
 
+<FILE Run="/bin/bash">
+<INLINE>
+echo
+echo "----------------------------------------------------"
+echo " &name; version &version; has been installed."
+echo " To configure, go to Settings > &name;"
+echo "----------------------------------------------------"
+echo
 </INLINE>
 </FILE>
 
@@ -26,449 +38,10 @@ Icon="hdd-o"
 ---
 <?php
 require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
-?>
-]]>
-</INLINE>
-</FILE>
-
-<FILE Name="/usr/local/emhttp/plugins/&name;/engine.php" Mode="0644">
-<INLINE>
-<![CDATA[
-<?php
-// Define constants
-define('PLUGIN_NAME', 'DiskSpaceManagement');
-define('PLUGIN_VERSION', '2025.11.08');
-define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
-define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-
-// Variable to hold a success message after saving
-$update_message = "";
-// Variable to hold a path validation error message
-$path_error_message = "";
-
-// Function to read a setting value and escape it for safe HTML output
-function get_config_val($key, $default = '') {
-    if (!file_exists(CONFIG_FILE)) {
-        return htmlspecialchars($default, ENT_QUOTES, 'UTF-8');
-    }
-    $config = parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW);
-    $value = $config[$key] ?? $default;
-    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
-}
-
-// Function to get a list of all installed data disks
-function get_array_disks() {
-    $disks = [];
-    if (!file_exists('/var/local/emhttp/disks.ini')) {
-        return $disks;
-    }
-    $ini_array = parse_ini_file('/var/local/emhttp/disks.ini', true);
-    
-    $data_disks = [];
-    foreach ($ini_array as $key => $details) {
-        // Only include disks that have a device assigned (i.e., are physically installed)
-        if (strpos($key, 'disk') === 0 && !empty($details['device'])) {
-            preg_match('/(\d+)/', $key, $matches);
-            $disk_num = isset($matches[1]) ? (int)$matches[1] : 999;
-            $name = !empty($details['name']) ? $details['name'] : ucfirst($key);
-            $data_disks[] = [
-                'num' => $disk_num,
-                'label' => $name, 
-                'device' => $details['device'], 
-                'path' => '/mnt/' . $key
-            ];
-        }
-    }
-
-    // Sort data disks by the numeric part of the key
-    usort($data_disks, function($a, $b) {
-        return $a['num'] <=> $b['num'];
-    });
-
-    return $data_disks;
-}
-
-// Function to validate that library paths exist on at least one disk.
-function validate_paths($path_string) {
-    if (empty(trim($path_string))) {
-        return [];
-    }
-    $invalid_paths = [];
-    $paths = explode(',', $path_string);
-    $disks = glob('/mnt/disk*');
-
-    if (empty($disks) && !is_dir('/mnt/user')) {
-        return [];
-    }
-
-    foreach ($paths as $path) {
-        $trimmed_path = trim($path);
-        if (empty($trimmed_path)) continue;
-
-        $relative_path = ltrim($trimmed_path, '/');
-        $path_found = false;
-
-        foreach ($disks as $disk) {
-            if (is_dir($disk . '/' . $relative_path)) {
-                $path_found = true;
-                break;
-            }
-        }
-        
-        if (!$path_found && is_dir('/mnt/user/' . $relative_path)) {
-            $path_found = true;
-        }
-
-        if (!$path_found) {
-            $invalid_paths[] = $trimmed_path;
-        }
-    }
-    return $invalid_paths;
-}
-
-
-// Handle POST request to save settings.
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_settings'])) {
-    // Convert the EXCLUDED_DISKS array from checkboxes into a comma-separated string.
-    if (isset($_POST['EXCLUDED_DISKS']) && is_array($_POST['EXCLUDED_DISKS'])) {
-        $_POST['EXCLUDED_DISKS'] = implode(',', $_POST['EXCLUDED_DISKS']);
-    } else {
-        // If no checkboxes are checked, ensure the value is an empty string.
-        $_POST['EXCLUDED_DISKS'] = '';
-    }
-
-    if (!is_dir(CONFIG_PATH)) {
-        mkdir(CONFIG_PATH, 0770, true);
-    }
-    
-    $old_config = file_exists(CONFIG_FILE) ? parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW) : [];
-    
-    $new_config = $_POST;
-    unset($new_config['save_settings']);
-
-    // --- Path Validation ---
-    $invalid_movie_paths = validate_paths($new_config['MOVIE_DIRS'] ?? '');
-    $invalid_tv_paths = validate_paths($new_config['TV_SHOW_DIRS'] ?? '');
-    $invalid_other_paths = validate_paths($new_config['OTHER_DIRS'] ?? '');
-
-    $error_messages = [];
-    if (!empty($invalid_movie_paths)) {
-        $error_messages[] = "<b>Warning:</b> The following Movie library paths appear to be invalid or are not found on any disk (check for typos and case-sensitivity): " . htmlspecialchars(implode(', ', $invalid_movie_paths), ENT_QUOTES, 'UTF-8');
-    }
-    if (!empty($invalid_tv_paths)) {
-        $error_messages[] = "<b>Warning:</b> The following TV Show library paths appear to be invalid or are not found on any disk (check for typos and case-sensitivity): " . htmlspecialchars(implode(', ', $invalid_tv_paths), ENT_QUOTES, 'UTF-8');
-    }
-    if (!empty($invalid_other_paths)) {
-        $error_messages[] = "<b>Warning:</b> The following Other library paths appear to be invalid or are not found on any disk (check for typos and case-sensitivity): " . htmlspecialchars(implode(', ', $invalid_other_paths), ENT_QUOTES, 'UTF-8');
-    }
-    if (!empty($error_messages)) {
-        $path_error_message = implode('<br>', $error_messages);
-    }
-    // --- End Path Validation ---
-
-    $cron_changed = ($old_config['CRON_SCHEDULE'] ?? null) !== ($new_config['CRON_SCHEDULE'] ?? null);
-    
-    $old_other_settings = $old_config;
-    if (isset($old_other_settings['CRON_SCHEDULE'])) unset($old_other_settings['CRON_SCHEDULE']);
-    $new_other_settings = $new_config;
-    if (isset($new_other_settings['CRON_SCHEDULE'])) unset($new_other_settings['CRON_SCHEDULE']);
-    $other_settings_changed = $old_other_settings !== $new_other_settings;
-
-    $cfg_content = "";
-    foreach($new_config as $key => $value) {
-        $escaped_value = str_replace('"', '\"', $value);
-        $cfg_content .= $key . '="' . $escaped_value . '"' . PHP_EOL;
-    }
-    file_put_contents(CONFIG_FILE, $cfg_content);
-
-    if ($cron_changed) {
-        $cron_schedule = $new_config['CRON_SCHEDULE'] ?? '0 3 * * *';
-        $log_file = $new_config['LOG_FILE'] ?? '/var/log/diskspacemanagement.log';
-        $script_path = "/usr/local/emhttp/plugins/" . PLUGIN_NAME . "/scripts/disk_space_management.sh";
-        $command = "/bin/bash " . escapeshellarg($script_path);
-        
-        $cron_file_path = "/boot/config/plugins/dynamix/" . PLUGIN_NAME . ".cron";
-        
-        $wrong_cron_path = CONFIG_PATH . "/" . PLUGIN_NAME . ".cron";
-        if (file_exists($wrong_cron_path)) {
-            unlink($wrong_cron_path);
-        }
-
-        if (strtolower($cron_schedule) === 'disabled') {
-            if (file_exists($cron_file_path)) {
-                unlink($cron_file_path);
-            }
-        } else {
-            $cron_content = "# Auto-generated cron job for DiskSpaceManagement" . PHP_EOL;
-            $cron_content .= "$cron_schedule $command" . PHP_EOL;
-            file_put_contents($cron_file_path, $cron_content);
-        }
-        
-        exec("update_cron");
-    }
-
-    if ($cron_changed && $other_settings_changed) {
-        $update_message = "Settings saved, cron schedule successfully updated.";
-    } elseif ($cron_changed) {
-        $update_message = "Cron schedule successfully updated.";
-    } elseif ($other_settings_changed) {
-        $update_message = "Settings saved.";
-    } else {
-        $update_message = "No changes were made.";
-    }
+if (function_exists('render_dsm_ui')) {
+    render_dsm_ui();
 }
 ?>
-<style>
-    .tabs {
-        justify-content: flex-start;
-        gap: 10px;
-    }
-    .log-container { background-color: #2b2b2b; color: #f1f1f1; font-family: monospace; white-space: pre-wrap; word-wrap: break-word; padding: 15px; border-radius: 5px; height: 500px; overflow-y: scroll; border: 1px solid #444; }
-    .success-message { padding: 10px; background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; border-radius: 5px; margin-bottom: 15px; }
-    .error-message { padding: 10px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 15px; }
-    .checkbox-container { background-color: #3a3a3a; border: 1px solid #555; border-radius: 4px; padding: 10px; height: 200px; overflow-y: auto; }
-    .checkbox-container label { display: block; margin-bottom: 5px; font-weight: normal; }
-    #excluded-disks-collapsible {
-        max-width: 400px;
-    }
-    #excluded-disks-trigger {
-        background-color: transparent;
-        border-width: 0 0 1px 0;
-        border-style: solid;
-        border-color: #777;
-        padding: 6px 2px;
-        cursor: pointer;
-        min-height: 1.5em;
-        color: #f1f1f1;
-        -webkit-user-select: none;
-        user-select: none;
-        width: 100%;
-        box-sizing: border-box;
-    }
-    #excluded-disks-trigger:hover { border-color: #999; }
-    #excluded-disks-container { margin-top: 5px; }
-    dd > .inline_help {
-        margin-left: 0;
-    }
-</style>
-<div id="diskspacemanagement">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div>
-            <h2>Disk Space Management <span style="font-size: 0.8em; color: #999;"><?= PLUGIN_VERSION ?></span></h2>
-            <p>Automated disk space management for your media library.</p>
-        </div>
-    </div>
-    
-    <?php if (!empty($update_message)): ?>
-        <div class="success-message">
-            <?= htmlspecialchars($update_message) ?>
-        </div>
-    <?php endif; ?>
-
-    <?php if (!empty($path_error_message)): ?>
-        <div class="error-message">
-            <?= $path_error_message /* Already HTML-escaped during creation */ ?>
-        </div>
-    <?php endif; ?>
-
-    <div class="tabs">
-        <button class="tab-button active" onclick="showTab('settings')">Settings</button>
-        <button class="tab-button" onclick="showTab('logs')">Logs</button>
-        <button class="tab-button" onclick="showTab('about')">About</button>
-        <button class="tab-button" onclick="showTab('changelog')">Changelog</button>
-    </div>
-
-    <div id="tab-settings" class="tab-content" style="display: block;">
-        <form id="diskspacemanagement_form" method="post" action="">
-            <input type="hidden" name="save_settings" value="true">
-            <dl>
-                <dt>Free Space Threshold (GB)</dt>
-                <dd>
-                    <input type="number" name="THRESHOLD_GB" value="<?= get_config_val('THRESHOLD_GB', '100') ?>" size="5">
-                    <blockquote class="inline_help"><p>The script will start moving files from any disk with free space below this value.</p></blockquote>
-                </dd>
-                
-                <dt>Dry Run</dt>
-                <dd>
-                  <select name="DRY_RUN">
-                    <option value="true" <?= get_config_val('DRY_RUN', 'true') == 'true' ? 'selected' : '' ?>>Enabled</option>
-                    <option value="false" <?= get_config_val('DRY_RUN', 'true') == 'false' ? 'selected' : '' ?>>Disabled</option>
-                  </select>
-                  <blockquote class="inline_help"><p>When enabled, the script will log what it would do without actually moving any files. Recommended for testing.</p></blockquote>
-                </dd>
-
-                <dt>Send Notifications</dt>
-                <dd>
-                  <select name="NOTIFY">
-                    <option value="true" <?= get_config_val('NOTIFY', 'true') == 'true' ? 'selected' : '' ?>>Yes</option>
-                    <option value="false" <?= get_config_val('NOTIFY', 'true') == 'false' ? 'selected' : '' ?>>No</option>
-                  </select>
-                  <blockquote class="inline_help"><p>Send a notification to the Unraid UI when the script starts and finishes.</p></blockquote>
-                </dd>
-
-                <dt>Log File Path</dt>
-                <dd>
-                    <input type="text" name="LOG_FILE" value="<?= get_config_val('LOG_FILE', '/var/log/diskspacemanagement.log') ?>" size="60">
-                    <blockquote class="inline_help"><p>Path to store the script execution log. If you want persistent logs store it on the cache drive or flash drive.</p></blockquote>
-                </dd>
-
-                <dt>Movie Library Paths</dt>
-                <dd>
-                    <input type="text" name="MOVIE_DIRS" value="<?= get_config_val('MOVIE_DIRS', 'media/Movies') ?>" size="60">
-                    <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/Movies,media/4K_Movies). Case-sensitive.</p></blockquote>
-                </dd>
-
-                <dt>Movie Sort Order</dt>
-                <dd>
-                  <select name="MOVIE_SORT_ORDER">
-                    <?php $val = get_config_val('MOVIE_SORT_ORDER', 'smallest'); ?>
-                    <option value="smallest" <?= $val == 'smallest' ? 'selected' : '' ?>>Smallest First</option>
-                    <option value="alphabetical" <?= $val == 'alphabetical' ? 'selected' : '' ?>>Alphabetical (A-Z)</option>
-                    <option value="alphabetical_reversed" <?= $val == 'alphabetical_reversed' ? 'selected' : '' ?>>Alphabetical (Z-A)</option>
-                    <option value="newest" <?= $val == 'newest' ? 'selected' : '' ?>>Newest First</option>
-                    <option value="oldest" <?= $val == 'oldest' ? 'selected' : '' ?>>Oldest First</option>
-                    <option value="random" <?= $val == 'random' ? 'selected' : '' ?>>Random</option>
-                  </select>
-                  <blockquote class="inline_help"><p>The order in which to move movie folders from a disk that is below the threshold.</p></blockquote>
-                </dd>
-
-                <dt>TV Show Library Paths</dt>
-                <dd>
-                    <input type="text" name="TV_SHOW_DIRS" value="<?= get_config_val('TV_SHOW_DIRS', 'media/TV') ?>" size="60">
-                    <blockquote class="inline_help"><p>Comma-separated list of paths, relative to the disk root (e.g., media/TV Shows,media/Kid Shows). Case-sensitive.</p></blockquote>
-                </dd>
-
-                <dt>TV Show Sort Order</dt>
-                <dd>
-                  <select name="TV_SORT_ORDER">
-                    <?php $val = get_config_val('TV_SORT_ORDER', 'fewest_seasons'); ?>
-                    <option value="fewest_seasons" <?= $val == 'fewest_seasons' ? 'selected' : '' ?>>Fewest Seasons First</option>
-                    <option value="smallest" <?= $val == 'smallest' ? 'selected' : '' ?>>Smallest First</option>
-                    <option value="alphabetical" <?= $val == 'alphabetical' ? 'selected' : '' ?>>Alphabetical (A-Z)</option>
-                    <option value="alphabetical_reversed" <?= $val == 'alphabetical_reversed' ? 'selected' : '' ?>>Alphabetical (Z-A)</option>
-                    <option value="newest" <?= $val == 'newest' ? 'selected' : '' ?>>Newest First</option>
-                    <option value="oldest" <?= $val == 'oldest' ? 'selected' : '' ?>>Oldest First</option>
-                    <option value="random" <?= $val == 'random' ? 'selected' : '' ?>>Random</option>
-                  </select>
-                  <blockquote class="inline_help"><p>The order in which to move TV show folders from a disk that is below the threshold.</p></blockquote>
-                </dd>
-
-                <dt>Other Library Paths</dt>
-                <dd>
-                    <input type="text" name="OTHER_DIRS" value="<?= get_config_val('OTHER_DIRS', 'media/Other') ?>" size="60">
-                    <blockquote class="inline_help"><p>Comma-separated list of any other library paths you wish to manage (e.g., media/Other,torrents).</p></blockquote>
-                </dd>
-
-                <dt>Other Sort Order</dt>
-                <dd>
-                  <select name="OTHER_SORT_ORDER">
-                    <?php $val = get_config_val('OTHER_SORT_ORDER', 'smallest'); ?>
-                    <option value="smallest" <?= $val == 'smallest' ? 'selected' : '' ?>>Smallest First</option>
-                    <option value="alphabetical" <?= $val == 'alphabetical' ? 'selected' : '' ?>>Alphabetical (A-Z)</option>
-                    <option value="alphabetical_reversed" <?= $val == 'alphabetical_reversed' ? 'selected' : '' ?>>Alphabetical (Z-A)</option>
-                    <option value="newest" <?= $val == 'newest' ? 'selected' : '' ?>>Newest First</option>
-                    <option value="oldest" <?= $val == 'oldest' ? 'selected' : '' ?>>Oldest First</option>
-                    <option value="random" <?= $val == 'random' ? 'selected' : '' ?>>Random</option>
-                  </select>
-                  <blockquote class="inline_help"><p>The order in which to move folders from the "Other" paths.</p></blockquote>
-                </dd>
-
-                <dt>Move Priority</dt>
-                <dd>
-                    <input type="text" name="MOVE_PRIORITY" value="<?= get_config_val('MOVE_PRIORITY', 'movies,tv,other') ?>" size="60">
-                    <blockquote class="inline_help"><p>The primary order of operations. Enter a comma-separated list of `movies`, `tv`, and `other` in the order you want them to be processed.</p></blockquote>
-                </dd>
-                
-                <dt>Excluded Disks</dt>
-                <dd>
-                    <?php
-                        $all_disks = get_array_disks();
-                        $excluded_disks_str = get_config_val('EXCLUDED_DISKS', '');
-                        $excluded_disks_array = !empty($excluded_disks_str) ? explode(',', $excluded_disks_str) : [];
-                        
-                        $display_names = [];
-                        if (!empty($excluded_disks_array)) {
-                            foreach ($all_disks as $disk) {
-                                if (in_array($disk['path'], $excluded_disks_array)) {
-                                    $display_names[] = $disk['label'];
-                                }
-                            }
-                        }
-                        $display_str = empty($display_names) ? 'None' : implode(', ', $display_names);
-                    ?>
-                    <div id="excluded-disks-collapsible">
-                        <div id="excluded-disks-trigger" onclick="toggleExcludedDisks()">
-                            <?= htmlspecialchars($display_str, ENT_QUOTES, 'UTF-8') ?>
-                        </div>
-                        <div id="excluded-disks-container" class="checkbox-container" style="display: none;">
-                            <?php
-                                if (empty($all_disks)) {
-                                    echo '<p style="color: #ccc;">No array disks found. Is the array started?</p>';
-                                } else {
-                                    foreach ($all_disks as $disk) {
-                                        $checked = in_array($disk['path'], $excluded_disks_array) ? 'checked' : '';
-                                        echo '<label>';
-                                        echo '<input type="checkbox" name="EXCLUDED_DISKS[]" value="' . htmlspecialchars($disk['path'], ENT_QUOTES, 'UTF-8') . '" ' . $checked . '>';
-                                        echo ' ' . htmlspecialchars($disk['label'], ENT_QUOTES, 'UTF-8') . ' (' . htmlspecialchars($disk['device'], ENT_QUOTES, 'UTF-8') . ')';
-                                        echo '</label>';
-                                    }
-                                }
-                            ?>
-                        </div>
-                    </div>
-                    <blockquote class="inline_help"><p>Select any disks you want the script to completely ignore. Click the field above to expand the list.</p></blockquote>
-                </dd>
-
-                <dt>Cron Schedule</dt>
-                <dd>
-                    <input type="text" name="CRON_SCHEDULE" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>" size="60">
-                    <blockquote class="inline_help"><p>Standard cron format for automatic execution. Enter "disabled" to turn off. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: https://crontab.guru/#0_3_*_*_* It's recommended to set the cron schedule to a time when you know the mover has finished.</p></blockquote>
-                </dd>
-            </dl>
-            <div id="buttons" style="margin-top: 20px;">
-              <span class="buttons-spaced">
-                <input type="button" value="Run Script Now" onclick="runScript()">
-                <input type="submit" value="Apply">
-              </span>
-            </div>
-        </form>
-    </div>
-    <div id="tab-logs" class="tab-content" style="display: none;">
-        <h3>Script Log</h3>
-        <p>This log shows the output from the log file specified in the settings. It will auto-refresh every 10 seconds while this tab is active.</p>
-        <div id="log-content" class="log-container">Loading log...</div>
-    </div>
-    <div id="tab-about" class="tab-content" style="display: none;">
-        <h3>About Disk Space Management</h3>
-        <p>For more information about each setting click the help button in the top right corner of the UnRaid web ui. This plugin was created mainly for those who use the split-level feature in Unraid. Due to how split level works, it will ignore the minimum free space setting and continue to move stuff to disks that are full/almost full. This is because split level tries to keep files and folders that belong together based on your split level setting on the same disk, and split level trumps all other settings. Even if there's little space left on the disk. So to combat this, this plugin will automatically move Movies and TV shows from disks that are below the threshold setting to the disk with the most free space available. You can customize the order of which "library" gets moved first, and also the order to sort them to determine which folders get moved first. It's recommended to set the cron schedule to a time when you know the mover has finished.</p>
-        <p><strong>Version:</strong> <?= PLUGIN_VERSION ?></p>
-    </div>
-    <div id="tab-changelog" class="tab-content" style="display: none;">
-        <h3>Changelog</h3>
-        <div class="log-container" style="height: auto; max-height: 500px;">
-            <?php
-                $changelog_file = '/usr/local/emhttp/plugins/' . PLUGIN_NAME . '/CHANGELOG.md';
-                if (file_exists($changelog_file)) {
-                    echo htmlspecialchars(file_get_contents($changelog_file));
-                } else {
-                    echo "Changelog file not found.";
-                }
-            ?>
-        </div>
-    </div>
-</div>
-<div id="progress_iframe_container" style="display:none; margin-top:20px;">
-    <h3>Script Output</h3>
-    <iframe name="progress_iframe" style="width:100%; height: 500px; border: 1px solid #ccc; border-radius: 5px; background-color: #2b2b2b;"></iframe>
-</div>
-<script>
-function showTab(tabName){$('.tab-content').hide();$('#tab-'+tabName).show();$('.tab-button').removeClass('active');$('button[onclick="showTab(\''+tabName+'\')"]').addClass('active');if(tabName==='logs'){updateLog();}}
-function runScript(){$('#progress_iframe_container').show();$('iframe[name="progress_iframe"]').attr('src','/plugins/<?=PLUGIN_NAME?>/run_handler.php');}
-function updateLog(){$.get('/plugins/<?=PLUGIN_NAME?>/log_handler.php',function(data){$('#log-content').text(data).scrollTop($('#log-content')[0].scrollHeight);});}
-function toggleExcludedDisks(){$('#excluded-disks-container').slideToggle(200);}
-setInterval(function(){if($('#tab-logs').is(':visible')){updateLog();}},10000);
-$(document).ready(function(){showTab('settings');});
-</script>
 ]]>
 </INLINE>
 </FILE>
@@ -477,6 +50,27 @@ $(document).ready(function(){showTab('settings');});
 <INLINE>
 <![CDATA[
 # Changelog
+## 2025.12.31
+🚀 Major Engine & Logic Overhaul
+- Unified Path Management: Replaced the rigid "Movie/TV/Other" category system with a flexible Folder Priority Queue.
+- Drag-and-Drop Prioritization: Added a new interactive UI that allows you to drag paths to set their processing priority (top-to-bottom).
+- Per-Path Granular Controls:
+- Disk Exclusions: You can now exclude specific disks for individual folders, independent of global exclusion settings.
+- Independent Sorting: Each folder in the queue can have its own unique sorting method (e.g., sort Movies by size, but TV Shows alphabetically).
+- Dynamic Path Migration: Integrated an automatic migration script that converts your legacy "Movie/TV/Other" settings into the new Queue format upon first run.
+- Interactive Path Picker: Introduced a visual folder browser (Picker) to select paths directly from your Unraid array instead of typing them manually.
+- Live Status Monitoring: Added a real-time status badge in the header to show if the management engine is currently IDLE or RUNNING.
+
+🔧 Bug Fixes & Safety
+- Cron System: Fixed critical issue where Cron schedules were not being written to the system's cron directory.
+- FUSE Loop Prevention: Integrated a safety guard to prevent the script from getting stuck in loops during Dry Runs by tracking simulated processed paths.
+- Critical Safety Guard: Added an explicit check to block /mnt/user from being used as a source or destination, preventing potential data loss from "User Share to Disk" move errors.
+- Fiexed bugs and updated code to comply with unRAIDS security guidelines for plugins.
+
+🎨 UI & UX Enhancements
+- Modernized Interface: Completely redesigned the settings page with a dark-themed, grid-based layout using the "Inter" font.
+- Tabbed Navigation: Separated Settings, Logs, Changelog, and About info into clean, easy-to-navigate tabs.
+- Enhanced Logging: The log terminal now features a high-contrast "Matrix" style (green on black) with auto-scrolling in Live mode. A refresh button for Dry Run to making it easier to read logs during a Dry Run and a one-click Clear Log function.
 
 ## 2025.11.08
 - Script: An attempt to fix the "user share caching issue", where the FUSE user share system is not updated to reflect the files new location. This fix will now automatically trigger a "cache refresh" after each successful file move, ensuring the file is immediately visible in the user share.
@@ -533,613 +127,649 @@ $(document).ready(function(){showTab('settings');});
 </INLINE>
 </FILE>
 
-<FILE Name="/usr/local/emhttp/plugins/&name;/log_handler.php" Mode="0770">
+<FILE Name="/usr/local/emhttp/plugins/&name;/engine.php" Mode="0644">
 <INLINE>
 <![CDATA[
 <?php
 define('PLUGIN_NAME', 'DiskSpaceManagement');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-define('LOG_FILE_PATH_CONFIG_KEY', 'LOG_FILE');
+define('PLUGIN_VERSION', '2025.12.31');
 
-header('Content-Type: text/plain');
+if (!isset($var)) {
+    $var = parse_ini_file('/var/local/emhttp/var.ini');
+}
 
-$raw_config = file_exists(CONFIG_FILE) ? parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW) : [];
-$logFile = $raw_config[LOG_FILE_PATH_CONFIG_KEY] ?? '/var/log/diskspacemanagement.log';
+function e($str) {
+    return htmlspecialchars($str ?? '', ENT_QUOTES, 'UTF-8');
+}
 
-if (file_exists($logFile)) {
-    echo file_get_contents($logFile);
-} else {
-    echo "Log file not found at " . htmlspecialchars($logFile) . ". Please run the script at least once to generate it.";
+// --- Migration Logic for Legacy Paths ---
+if (file_exists(CONFIG_FILE)) {
+    $raw_cfg = parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW);
+    if (!isset($raw_cfg['MANAGED_PATHS']) || empty($raw_cfg['MANAGED_PATHS'])) {
+        $migrated_paths = [];
+        $mapping = ['MOVIE_DIRS' => 'MOVIE_SORT_ORDER', 'TV_SHOW_DIRS' => 'TV_SORT_ORDER', 'OTHER_DIRS' => 'OTHER_SORT_ORDER'];
+
+        foreach ($mapping as $dir_key => $sort_key) {
+            if (!empty($raw_cfg[$dir_key])) {
+                $sort_val = $raw_cfg[$sort_key] ?? 'smallest';
+                if ($sort_val === 'fewest_seasons') $sort_val = 'smallest';
+                foreach (explode(',', $raw_cfg[$dir_key]) as $f) {
+                    $trimmed = trim($f);
+                    if (!empty($trimmed)) $migrated_paths[] = $trimmed . ':' . $sort_val . ':';
+                }
+            }
+        }
+
+        if (!empty($migrated_paths)) {
+            $raw_cfg['MANAGED_PATHS'] = implode('|', $migrated_paths);
+            $content = "";
+            foreach ($raw_cfg as $k => $v) { $content .= "$k=\"$v\"\n"; }
+            file_put_contents(CONFIG_FILE, $content);
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['save_settings'])) {
+    $token = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? null;
+    if (!$token || $token !== $var['csrf_token']) {
+        header('HTTP/1.1 403 Forbidden');
+        echo "CSRF Validation Failed.";
+        exit;
+    }
+    if (!is_dir(CONFIG_PATH)) mkdir(CONFIG_PATH, 0770, true);
+    
+    $schedule = $_POST['CRON_SCHEDULE'] ?? '0 3 * * *';
+    $new_config = [
+        'THRESHOLD_GB' => $_POST['THRESHOLD_GB'] ?? '50',
+        'DRY_RUN'      => $_POST['DRY_RUN'] ?? 'true',
+        'CRON_SCHEDULE' => $schedule,
+        'NOTIFY'       => $_POST['NOTIFY'] ?? 'true',
+        'MANAGED_PATHS' => $_POST['MANAGED_PATHS'] ?? '',
+        'EXCLUDED_DISKS' => $_POST['EXCLUDED_DISKS'] ?? '',
+        'LOG_FILE'     => $_POST['LOG_FILE'] ?? '/var/log/diskspacemanagement.log'
+    ];
+    
+    $content = "";
+    foreach ($new_config as $k => $v) { $content .= "$k=\"$v\"\n"; }
+    file_put_contents(CONFIG_FILE, $content);
+
+    // CRON SYSTEM FIX: Update the actual Unraid cron file
+    $cron_file = "/boot/config/plugins/dynamix/" . PLUGIN_NAME . ".cron";
+    if (strtolower($schedule) !== 'disabled') {
+        $cron_content = "# Generated by DiskSpaceManagement\n$schedule /usr/local/emhttp/plugins/DiskSpaceManagement/scripts/disk_space_management.sh > /dev/null 2>&1\n";
+        file_put_contents($cron_file, $cron_content);
+    } else {
+        if (file_exists($cron_file)) unlink($cron_file);
+    }
+    
+    // Trigger Unraid to reload the cron table
+    exec("update_cron");
+    
+    echo "success";
+    exit;
+}
+
+function get_config_val($key, $default = '') {
+    if (!file_exists(CONFIG_FILE)) return htmlspecialchars($default);
+    $config = parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW);
+    return htmlspecialchars($config[$key] ?? $default, ENT_QUOTES, 'UTF-8');
+}
+
+function get_array_disks() {
+    $disks = [];
+    if (!file_exists('/var/local/emhttp/disks.ini')) return $disks;
+    $ini = parse_ini_file('/var/local/emhttp/disks.ini', true);
+    foreach ($ini as $key => $details) {
+        if (strpos($key, 'disk') === 0 && !empty($details['device'])) {
+            preg_match('/(\d+)/', $key, $m);
+            $disks[] = ['num' => (int)$m[1], 'label' => $details['name'] ?? ucfirst($key), 'path' => '/mnt/'.$key, 'device' => $details['device']];
+        }
+    }
+    usort($disks, function($a, $b) { return $a['num'] <=> $b['num']; });
+    return $disks;
+}
+
+function render_dsm_ui() {
+    global $var;
+    $all_disks = get_array_disks();
+    $managed_paths_raw = get_config_val('MANAGED_PATHS', '');
+    $managed_items = [];
+    if (!empty($managed_paths_raw)) {
+        foreach (explode('|', $managed_paths_raw) as $item) {
+            $parts = explode(':', $item);
+            if (count($parts) >= 2) {
+                $managed_items[] = ['path' => $parts[0], 'sort' => $parts[1], 'excl' => isset($parts[2]) ? explode(',', $parts[2]) : []];
+            }
+        }
+    }
+    $is_dry_run = get_config_val('DRY_RUN', 'true') === 'true';
+    $is_running = file_exists('/tmp/dsm.running');
+?>
+    <style>
+        #diskspacemanagement { font-family: 'Inter', sans-serif; max-width: 1400px; margin: 0 auto; color: #d1d1d1; padding-top: 10px; }
+        .dsm-header-status { display: flex; justify-content: space-between; align-items: center; padding: 20px 30px; border-radius: 8px; margin-bottom: 25px; background: <?= $is_dry_run ? 'linear-gradient(90deg, #3a2a0d 0%, #1a1a1a 100%)' : 'linear-gradient(90deg, #1e2d21 0%, #1a1a1a 100%)' ?>; border: 1px solid <?= $is_dry_run ? '#f0ad4e' : '#28a745' ?>; }
+        .tabs { margin-bottom: 30px; display: flex; gap: 4px; background: #111; padding: 4px; border-radius: 8px; width: fit-content; }
+        .tab-button { background: transparent; border: none; color: #777; padding: 10px 20px; cursor: pointer; border-radius: 6px; font-weight: 600; transition: 0.2s; }
+        .tab-button.active { background: #ff8c2f; color: #fff; box-shadow: 0 4px 10px rgba(255,140,47,0.2); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .dsm-grid { display: grid; grid-template-columns: 340px 1fr 340px; gap: 20px; align-items: stretch; }
+        .dsm-col { display: flex; flex-direction: column; height: 100%; }
+        .dsm-card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 25px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+        .dsm-card-title { font-size: 1.1em; font-weight: 600; margin-bottom: 15px; color: #ff8c2f; border-bottom: 1px solid #333; padding-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+        .path-item { background: #232323; border: 1px solid #333; border-radius: 6px; margin: 8px 0; padding: 12px 15px; display: flex; align-items: center; gap: 10px; cursor: grab; }
+        .path-name { flex-grow: 1; font-family: 'Fira Code', monospace; color: #88ccee; font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; }
+        .dsm-label { display: block; font-weight: 600; margin-bottom: 8px; color: #aaa; font-size: 0.85em; }
+        .dsm-input { background: #0c0c0c; border: 1px solid #444; color: #eee; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; margin-bottom: 15px; }
+        .btn-primary { background: #ff8c2f; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-weight: 600; }
+        .excl-dropdown { position: relative; display: inline-block; }
+        .excl-content { display: none; position: absolute; background-color: #1a1a1a; min-width: 160px; box-shadow: 0px 8px 16px rgba(0,0,0,0.5); z-index: 100; padding: 10px; border: 1px solid #444; border-radius: 4px; right: 0; }
+        .excl-dropdown:hover .excl-content { display: block; }
+        .remove-btn { color: #ff5555; cursor: pointer; font-weight: bold; font-size: 1.3em; padding: 5px 15px; margin-left: 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; transition: background 0.2s; }
+        .remove-btn:hover { background: rgba(255, 85, 85, 0.2); }
+        .log-container { background: #000; color: #00ff41; text-shadow: 0 0 2px #00ff41; font-family: 'Fira Code', monospace; padding: 20px; border-radius: 6px; height: 500px; overflow-y: auto; border: 1px solid #003b00; line-height: 1.4; white-space: pre-wrap; font-size: 12px; margin-bottom: 15px; }
+        #save-badge { display:none; background:#28a745; color:#fff; padding:6px 12px; border-radius:4px; font-weight:bold; font-size:0.85em; margin-left:15px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+        .help-desc { font-size: 1em; color: #aaa; line-height: 1.6; margin-bottom: 15px; }
+    </style>
+
+    <div id="diskspacemanagement">
+        <div class="dsm-header-status">
+            <div>
+                <h2 style="margin:0; display:inline-block; vertical-align:middle;">Disk Space Management <span style="font-size: 0.6em; opacity: 0.5;">v<?= PLUGIN_VERSION ?></span></h2>
+                <span id="run-status-badge" class="status-badge" style="background: <?= $is_running ? '#28a745' : '#444' ?>; color: #fff; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.8em; margin-left: 10px;">
+                    <?= $is_running ? '<i class="fa fa-refresh fa-spin"></i> RUNNING' : '<i class="fa fa-pause"></i> IDLE' ?>
+                </span>
+                <span id="save-badge"><i class="fa fa-check"></i> Settings Saved!</span>
+            </div>
+            <div style="text-align: right;">
+                <span style="background:<?= $is_dry_run ? '#f0ad4e' : '#28a745' ?>; color:#000; padding:4px 10px; border-radius:4px; font-weight:bold;"><?= $is_dry_run ? 'DRY RUN' : 'LIVE' ?></span>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab-button active" onclick="showTab('settings', this)"><i class="fa fa-cog"></i> Settings</button>
+            <button class="tab-button" onclick="showTab('logs', this)"><i class="fa fa-terminal"></i> Logs</button>
+            <button class="tab-button" onclick="showTab('changelog', this)"><i class="fa fa-history"></i> Changelog</button>
+            <button class="tab-button" onclick="showTab('about', this)"><i class="fa fa-info-circle"></i> About</button>
+        </div>
+
+        <div id="tab-settings" class="tab-content active">
+            <div id="dsm_ui_container">
+                <input type="hidden" id="managed_paths_input">
+                <div class="dsm-grid">
+                    <div class="dsm-col">
+                        <div class="dsm-card">
+                            <div class="dsm-card-title"><i class="fa fa-question-circle"></i> Help & Info</div>
+                            <p class="help-desc"><b>Threshold:</b> Moves trigger when a disk falls below this free space value.</p>
+                            <p class="help-desc"><b>Mode:</b> Dry Run = Will not move files, only simulated moves are logged. Live Mode = Will move files.</p>
+                            <p class="help-desc"><b>Global Excluded Disks:</b> Selected disks are excluded from move operations entirely (will not touch).</p>
+                            <p class="help-desc"><b>Log File Path:</b> Save the log on the array or a pool to make it persistent. Default path is wiped at restart.</p>
+                            <p class="help-desc"><b>Cron Schedule:</b> Standard cron format for automatic execution. Enter "disabled" to turn off. It's recommended to set the cron schedule to a time when you know the mover has finished. Example: '0 3 * * *' runs at 3:00 AM every day. See this link if you need help figuering out what to put here: <a href="https://crontab.guru/#0_3_*_*_*" target="_blank" style="color: #ff8c2f; text-decoration: underline;">crontab.guru</a></p>
+                            <p class="help-desc"><b>Notifications:</b> Sends detailed summaries to the Unraid WebUI and notification agents.</p>
+                            <p class="help-desc"><b>Folder Priority Queue:</b> Paths are processed top to bottom. Click anywhere on the row to drag and prioritize.</p>
+                            <p class="help-desc"><b>Per-Path Excluded Disks:</b> Hover over "EXCL. DISKS" on a path to exclude a disk FROM moves on that path specifically.</p>
+                            <p class="help-desc"><b>Per-Path Sorting Order:</b> The sorting order of which files are moved first.</p>
+                        </div>
+                    </div>
+
+                    <div class="dsm-col">
+                        <div class="dsm-card">
+                            <div class="dsm-card-title"><i class="fa fa-reorder"></i> Folder Priority Queue</div>
+                            <div id="path-list">
+                                <?php foreach ($managed_items as $item): ?>
+                                <div class="path-item" data-path="<?= e($item['path']) ?>">
+                                    <div class="path-handle" style="opacity:0.5;">☰</div>
+                                    <div class="path-name"><?= e($item['path']) ?></div>
+                                    <div class="excl-dropdown">
+                                        <button type="button" style="background:#444; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-size:0.8em;">Excl. Disks</button>
+                                        <div class="excl-content">
+                                            <?php foreach ($all_disks as $disk): ?>
+                                            <label style="display:block; font-size:0.85em; margin:3px 0; cursor:pointer;">
+                                                <input type="checkbox" class="folder-ex-disk" value="<?= e($disk['path']) ?>" <?= in_array($disk['path'], $item['excl']) ? 'checked' : '' ?>> <?= e($disk['label']) ?>
+                                            </label>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                    <select class="path-sort dsm-input" style="width: auto; margin-bottom:0; padding: 5px;">
+                                        <option value="smallest" <?= $item['sort'] == 'smallest' ? 'selected' : '' ?>>Smallest First</option>
+                                        <option value="alphabetical" <?= $item['sort'] == 'alphabetical' ? 'selected' : '' ?>>Alphabetical (A-Z)</option>
+                                        <option value="alphabetical_reversed" <?= $item['sort'] == 'alphabetical_reversed' ? 'selected' : '' ?>>Alphabetical (Z-A)</option>
+                                        <option value="newest" <?= $item['sort'] == 'newest' ? 'selected' : '' ?>>Newest First</option>
+                                        <option value="oldest" <?= $item['sort'] == 'oldest' ? 'selected' : '' ?>>Oldest First</option>
+                                    </select>
+                                    <span class="remove-btn" onclick="this.closest('.path-item').remove(); updateManagedPaths();" title="Remove path">X</span>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <button type="button" class="btn-primary" style="margin-top: 15px; width:100%" onclick="openPicker('managed')"><i class="fa fa-plus"></i> Add Path</button>
+                        </div>
+                    </div>
+
+                    <div class="dsm-col">
+                        <div class="dsm-card" style="height: auto; flex: 0 1 auto; margin-bottom: 20px;">
+                            <div class="dsm-card-title"><i class="fa fa-sliders"></i> Engine Rules</div>
+                            <label class="dsm-label">Threshold (GB)</label>
+                            <input type="number" id="THRESHOLD_GB" class="dsm-input" value="<?= get_config_val('THRESHOLD_GB', '50') ?>">
+                            <label class="dsm-label">Mode</label>
+                            <select id="DRY_RUN" class="dsm-input">
+                                <option value="true" <?= $is_dry_run ? 'selected' : '' ?>>Dry Run (Safety On)</option>
+                                <option value="false" <?= !$is_dry_run ? 'selected' : '' ?>>Live Mode (Move Files)</option>
+                            </select>
+                            <label class="dsm-label">Global Excluded Disks</label>
+                            <div id="global_excl_list" style="background:#0c0c0c; border:1px solid #444; border-radius:4px; padding:10px; max-height:120px; overflow-y:auto; margin-bottom:15px;">
+                                <?php $ex_arr = explode(',', get_config_val('EXCLUDED_DISKS', ''));
+                                foreach ($all_disks as $disk): ?>
+                                    <label style="display:block; margin:4px 0; cursor:pointer;"><input type="checkbox" name="global_excl_disk" value="<?= e($disk['path']) ?>" <?= in_array($disk['path'], $ex_arr) ? 'checked' : '' ?>> <?= e($disk['label']) ?></label>
+                                <?php endforeach; ?>
+                            </div>
+                            <label class="dsm-label">Log File Path</label>
+                            <div style="display: flex; gap: 5px;">
+                                <input type="text" id="log_file_input" class="dsm-input" value="<?= get_config_val('LOG_FILE', '/var/log/diskspacemanagement.log') ?>">
+                                <button type="button" class="btn-primary" style="padding: 10px; margin-bottom: 15px;" onclick="openPicker('log')"><i class="fa fa-folder-open"></i></button>
+                            </div>
+                        </div>
+                        <div class="dsm-card" style="flex: 1;">
+                            <div class="dsm-card-title"><i class="fa fa-clock-o"></i> Automation</div>
+                            <label class="dsm-label">Cron Schedule</label>
+                            <input type="text" id="CRON_SCHEDULE" class="dsm-input" value="<?= get_config_val('CRON_SCHEDULE', '0 3 * * *') ?>">
+                            <label class="dsm-label">Notifications</label>
+                            <select id="NOTIFY" class="dsm-input">
+                                <option value="true" <?= get_config_val('NOTIFY', 'true') == 'true' ? 'selected' : '' ?>>Enabled</option>
+                                <option value="false" <?= get_config_val('NOTIFY', 'true') == 'false' ? 'selected' : '' ?>>Disabled</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:20px; display:flex; gap:10px;">
+                    <button type="button" id="dsm_save_btn" class="btn-primary" style="background:#28a745;" onclick="saveSettings()">Save Settings</button>
+                    <button type="button" class="btn-primary" style="background:#444;" onclick="runScriptInTab()">Run Now</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-logs" class="tab-content">
+            <div class="dsm-card">
+                <div class="dsm-card-title"><i class="fa fa-terminal"></i> Execution Logs</div>
+                <div id="log-content" class="log-container">Loading log output...</div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" class="btn-primary" style="background: #444;" onclick="updateLog()"><i class="fa fa-refresh"></i> Refresh</button>
+                    <button type="button" class="btn-primary" style="background: #a72828;" onclick="clearLog()"><i class="fa fa-trash"></i> Clear Log</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-changelog" class="tab-content">
+            <div class="dsm-card">
+                <div class="dsm-card-title">Changelog</div>
+                <div style="white-space: pre-wrap; font-family: monospace; color:#ccc;"><?php $cl_path = '/usr/local/emhttp/plugins/DiskSpaceManagement/CHANGELOG.md'; echo e(file_get_contents($cl_path)) ?: "Changelog not found."; ?></div>
+            </div>
+        </div>
+
+        <div id="tab-about" class="tab-content">
+            <div class="dsm-card">
+                <div class="dsm-card-title"><i class="fa fa-info-circle"></i> About DSM</div>
+                <p>Disk Space Management balances Unraid array usage while respecting folder structures. Best for split-level users.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="picker-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; align-items:center; justify-content:center;">
+        <div class="modal-box" style="background:#1a1a1a; padding:30px; border-radius:8px; width:500px; border:1px solid #444;">
+            <h3 id="picker-title" style="margin-top:0;">Select Folder</h3>
+            <div id="picker-list" style="max-height:300px; overflow-y:auto; margin-bottom:20px; background:#000; padding:10px;"></div>
+            <div style="display:flex; justify-content:space-between;">
+                <button onclick="$('#picker-modal').hide()" class="btn-primary" style="background:#555;">Cancel</button>
+                <button id="picker-confirm" class="btn-primary">Select Current</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <script>
+    const CSRF = window.csrf_token || "<?= $var['csrf_token'] ?>";
+    $.ajaxSetup({ headers: { 'X-CSRF-Token': CSRF }, data: { csrf_token: CSRF } });
+    let justRun = false;
+
+    function updateManagedPaths() {
+        let paths = [];
+        document.querySelectorAll('.path-item').forEach(el => {
+            let sort = el.querySelector('.path-sort').value;
+            let ex = []; 
+            el.querySelectorAll('.folder-ex-disk:checked').forEach(c => ex.push(c.value));
+            paths.push(el.dataset.path + ':' + sort + ':' + ex.join(','));
+        });
+        document.getElementById('managed_paths_input').value = paths.join('|');
+    }
+
+    new Sortable(document.getElementById('path-list'), { animation: 150, onEnd: updateManagedPaths });
+    $(document).on('change', '.path-sort, .folder-ex-disk', updateManagedPaths);
+
+    function showTab(name, btn) { $('.tab-content').removeClass('active'); $('.tab-button').removeClass('active'); $('#tab-' + name).addClass('active'); $(btn).addClass('active'); if(name === 'logs') updateLog(); }
+
+    function updateLog() { 
+        $.get('/plugins/DiskSpaceManagement/log_handler.php', function(data) { 
+            const log = $('#log-content'); log.text(data); 
+            if (justRun || $('#DRY_RUN').val() === 'false') { log.scrollTop(log[0].scrollHeight); justRun = false; }
+        }); 
+    }
+
+    function clearLog() { if(confirm('Clear the log file?')) $.get('/plugins/DiskSpaceManagement/log_handler.php', { clear: 1 }, function() { updateLog(); }); }
+    function checkStatus() { $.get('/plugins/DiskSpaceManagement/status_handler.php', function(data) { if(data.trim() === "running") { $('#run-status-badge').html('<i class="fa fa-refresh fa-spin"></i> RUNNING').css('background','#28a745'); } else { $('#run-status-badge').html('<i class="fa fa-pause"></i> IDLE').css('background','#444'); } }); }
+
+    function runScriptInTab() { showTab('logs', $('.tab-button:contains("Logs")')[0]); $('#log-content').text('Initiating background run...'); justRun = true; $.get('/plugins/DiskSpaceManagement/run_handler.php', function() { checkStatus(); }); }
+
+    function saveSettings() {
+        updateManagedPaths();
+        const $btn = $('#dsm_save_btn');
+        $btn.prop('disabled', true).text('Saving...');
+        let globalExcl = [];
+        $('input[name="global_excl_disk"]:checked').each(function() { globalExcl.push($(this).val()); });
+        const postData = {
+            csrf_token: CSRF, save_settings: 1, ajax: 1,
+            THRESHOLD_GB: $('#THRESHOLD_GB').val(), DRY_RUN: $('#DRY_RUN').val(),
+            CRON_SCHEDULE: $('#CRON_SCHEDULE').val(), NOTIFY: $('#NOTIFY').val(),
+            MANAGED_PATHS: $('#managed_paths_input').val(), EXCLUDED_DISKS: globalExcl.join(','),
+            LOG_FILE: $('#log_file_input').val()
+        };
+        $.ajax({
+            url: '/plugins/DiskSpaceManagement/engine.php', type: 'POST', data: postData,
+            success: function(res) {
+                if (res.trim() === "success") {
+                    $('#save-badge').fadeIn().delay(1500).fadeOut(function() { window.location.reload(); });
+                } else {
+                    alert("Save Error: " + res); $btn.prop('disabled', false).text('Save Settings');
+                }
+            },
+            error: function() { alert("AJAX Save Failed."); $btn.prop('disabled', false).text('Save Settings'); }
+        });
+    }
+
+    let currentPickerPath = '/mnt/user0';
+    let activePickerMode = 'managed';
+    const allDisksJson = <?= json_encode($all_disks) ?>;
+
+    function openPicker(mode) { 
+        activePickerMode = mode; 
+        let startRoot = (mode === 'managed') ? '/mnt/user0' : '/mnt/user';
+        $('#picker-modal').css('display','flex'); 
+        loadPickerPath(startRoot); 
+    }
+
+    function loadPickerPath(path) { 
+        currentPickerPath = path; 
+        $('#picker-title').text(path); 
+        let currentRoot = (activePickerMode === 'managed') ? '/mnt/user0' : '/mnt/user';
+        $.getJSON('/plugins/DiskSpaceManagement/picker.php', { path: path }, function(data) { 
+            let html = `<div onclick="loadPickerPath('${currentRoot}')" style="cursor:pointer; padding:5px; color:#ff8c2f;">[ Root ]</div>`; 
+            data.forEach(function(dir) { 
+                html += `<div onclick="loadPickerPath('${dir.path}')" style="cursor:pointer; padding:5px; border-bottom:1px solid #222;">📁 ${dir.name}</div>`; 
+            }); 
+            $('#picker-list').html(html); 
+        }); 
+    }
+
+    $('#picker-confirm').click(function() { 
+        if (activePickerMode === 'log') { 
+            $('#log_file_input').val(currentPickerPath + '/diskspacemanagement.log'); 
+            $('#picker-modal').hide(); 
+        } 
+        else {
+            let currentRoot = (currentPickerPath.indexOf('/mnt/user0') === 0) ? '/mnt/user0/' : '/mnt/user/';
+            const rel = currentPickerPath.replace(currentRoot, ''); 
+            if(!rel || rel === '/mnt/user' || rel === '/mnt/user0') return alert('Select a sub-folder'); 
+            
+            let exclHtml = ''; allDisksJson.forEach(d => { exclHtml += `<label style="display:block; font-size:0.85em; margin:3px 0; cursor:pointer;"><input type="checkbox" class="folder-ex-disk" value="${d.path}"> ${d.label}</label>`; });
+            
+            const html = `
+            <div class="path-item" data-path="${rel}">
+                <div class="path-handle" style="opacity:0.5;">☰</div>
+                <div class="path-name">${rel}</div>
+                <div class="excl-dropdown">
+                    <button type="button" style="background:#444; color:#fff; border:none; padding:5px 8px; border-radius:4px; font-size:0.8em;">Excl. Disks</button>
+                    <div class="excl-content">${exclHtml}</div>
+                </div>
+                <select class="path-sort dsm-input" style="width: auto; margin-bottom:0; padding: 5px;">
+                    <option value="smallest">Smallest First</option>
+                    <option value="alphabetical">Alphabetical (A-Z)</option>
+                    <option value="alphabetical_reversed">Alphabetical (Z-A)</option>
+                    <option value="newest">Newest First</option>
+                    <option value="oldest">Oldest First</option>
+                </select>
+                <span class="remove-btn" onclick="this.closest('.path-item').remove(); updateManagedPaths();" title="Remove path">X</span>
+            </div>`;
+            
+            $('#path-list').append(html); $('#picker-modal').hide(); updateManagedPaths();
+        }
+    });
+    setInterval(checkStatus, 3000);
+    </script>
+<?php
 }
 ?>
 ]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/&name;/log_handler.php" Mode="0770">
+<INLINE>
+<![CDATA[<?php 
+require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
+if (!isset($_GET['csrf_token']) || $_GET['csrf_token'] !== $var['csrf_token']) die("Unauthorized");
+$config = parse_ini_file(CONFIG_FILE, false, INI_SCANNER_RAW); 
+$logFile = !empty($config['LOG_FILE']) ? $config['LOG_FILE'] : '/var/log/diskspacemanagement.log'; 
+$absParent = realpath(dirname($logFile)) ?: dirname($logFile);
+$is_safe = false;
+if (strpos($absParent, '/var/log') === 0 || strpos($absParent, CONFIG_PATH) === 0 || strpos($absParent, '/mnt/') === 0) $is_safe = true;
+if (strpos($logFile, '..') !== false) $is_safe = false; 
+if (!$is_safe) die("Access denied: Invalid log directory.");
+if (isset($_GET['clear'])) { file_put_contents($logFile, ""); exit; } 
+header('Content-Type: text/plain'); 
+echo file_exists($logFile) ? file_get_contents($logFile) : "Log file not found. Run script to generate output."; 
+?>]]>
+</INLINE>
+</FILE>
+
+<FILE Name="/usr/local/emhttp/plugins/&name;/status_handler.php" Mode="0770">
+<INLINE>
+<![CDATA[<?php 
+require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
+if (!isset($_GET['csrf_token']) || $_GET['csrf_token'] !== $var['csrf_token']) die("Unauthorized");
+header('Content-Type: text/plain'); echo file_exists('/tmp/dsm.running') ? "running" : "idle"; 
+?>]]>
 </INLINE>
 </FILE>
 
 <FILE Name="/usr/local/emhttp/plugins/&name;/run_handler.php" Mode="0770">
 <INLINE>
-<![CDATA[
-<?php
-header('Content-Type: text/html; charset=utf-8');
-?>
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {
-            background-color: #2b2b2b;
-            color: #f1f1f1;
-            font-family: monospace;
-            margin: 10px;
-            white-space: pre;
-        }
-    </style>
-</head>
-<body>
-<?php
-echo "Starting Disk Space Management script...\n\n";
-@ob_end_flush();
-@flush();
-
-$script_path = "/usr/local/emhttp/plugins/DiskSpaceManagement/scripts/disk_space_management.sh";
-$escaped_script_path = escapeshellarg($script_path);
-
-// Use popen for real-time output, which has proven more reliable for the iframe.
-$handle = popen("/bin/bash $escaped_script_path 2>&1", 'r');
-if ($handle) {
-    while (!feof($handle)) {
-        echo htmlspecialchars(fgets($handle), ENT_QUOTES, 'UTF-8');
-        @flush();
-        @ob_flush();
-    }
-    pclose($handle);
-}
-
-echo "\n\nScript finished.";
-?>
-</body>
-</html>
-]]>
+<![CDATA[<?php 
+require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
+if (!isset($_GET['csrf_token']) || $_GET['csrf_token'] !== $var['csrf_token']) die("Unauthorized");
+exec("/bin/bash /usr/local/emhttp/plugins/DiskSpaceManagement/scripts/disk_space_management.sh > /dev/null 2>&1 &"); 
+?>]]>
 </INLINE>
 </FILE>
 
-<EXEC>
-/bin/mkdir -p /usr/local/emhttp/plugins/&name;/scripts
-</EXEC>
+<FILE Name="/usr/local/emhttp/plugins/&name;/picker.php" Mode="0770">
+<INLINE>
+<![CDATA[<?php 
+require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
+if (!isset($_GET['csrf_token']) || $_GET['csrf_token'] !== $var['csrf_token']) die("Unauthorized");
+$path = $_GET['path'] ?? '/mnt/user'; 
+if ((strpos($path, '/mnt/user') !== 0 && strpos($path, '/mnt/user0') !== 0) || strpos($path, '..') !== false) die(json_encode([])); 
+$dirs = []; 
+if (is_dir($path)) { foreach (scandir($path) as $file) { if ($file == '.' || $file == '..') continue; if (is_dir("$path/$file")) $dirs[] = ['name' => $file, 'path' => "$path/$file"]; } } 
+header('Content-Type: application/json'); echo json_encode($dirs); ?>]]>
+</INLINE>
+</FILE>
 
-<FILE Name="/usr/local/emhttp/plugins/&name;/scripts/disk_space_management.sh" Mode="0770">
+<FILE Name="/usr/local/emhttp/plugins/&name;/scripts/disk_space_management.sh" Mode="0755">
 <INLINE>
 <![CDATA[
 #!/bin/bash
-# ==============================================================================
-# Unraid Disk Space Management Script
-# ==============================================================================
+RUN_FILE="/tmp/dsm.running"
+echo $$ > "$RUN_FILE"
+trap "rm -f $RUN_FILE" EXIT
 
-# --- Environment ---
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# --- Configuration ---
 CONFIG_FILE="/boot/config/plugins/DiskSpaceManagement/settings.cfg"
+get_cfg() { grep "^$1=" "$CONFIG_FILE" | cut -d'"' -f2; }
 
-# Set default values for all settings first.
-THRESHOLD_GB="50"
-DRY_RUN="true"
-LOG_FILE="/var/log/diskspacemanagement.log"
-NOTIFY="true"
-EXCLUDED_DISKS=""
-MOVIE_DIRS="media/Movies"
-TV_SHOW_DIRS="media/TV"
-OTHER_DIRS="media/Other"
-MOVIE_SORT_ORDER="smallest"
-TV_SORT_ORDER="fewest_seasons"
-OTHER_SORT_ORDER="smallest"
-MOVE_PRIORITY="movies,tv,other"
+THRESHOLD_GB=$(get_cfg "THRESHOLD_GB")
+DRY_RUN=$(get_cfg "DRY_RUN")
+LOG_FILE=$(get_cfg "LOG_FILE")
+NOTIFY=$(get_cfg "NOTIFY")
+MANAGED_PATHS=$(get_cfg "MANAGED_PATHS")
+EXCLUDED_DISKS=$(get_cfg "EXCLUDED_DISKS")
 
+THRESHOLD_GB=${THRESHOLD_GB:-50}
+DRY_RUN=${DRY_RUN:-true}
+LOG_FILE=${LOG_FILE:-/var/log/diskspacemanagement.log}
+NOTIFY=${NOTIFY:-true}
 
-# --- Log File Setup and Execution Redirection ---
-# Load settings from the config file ONLY to get the LOG_FILE path before setting up logs.
-if [ -f "$CONFIG_FILE" ]; then
-    source "$CONFIG_FILE"
-fi
-
-# Ensure the persistent log directory exists.
-mkdir -p "$(dirname "$LOG_FILE")"
-
-# Create a temporary log file for the current session.
-TEMP_LOG_FILE=$(mktemp)
-
-# Set a trap to ensure the temporary log file is removed on script exit.
-trap 'rm -f "$TEMP_LOG_FILE"' EXIT
-
-# Redirect all subsequent output (stdout & stderr) to be appended to the temporary log file,
-# while also passing it through to the original stdout (for the UI on manual runs).
-exec > >(tee -a "$TEMP_LOG_FILE") 2>&1
-
-log_message() {
-    local message
-    message="$(date +'%Y-%m-%d %H:%M:%S') - $1"
-    echo "$message"
-}
-
-# --- Main Execution ---
 SCRIPT_START_TIME=$(date +"%Y-%m-%d %H:%M:%S")
+TEMP_LOG_FILE=$(mktemp)
+trap 'rm -f "$TEMP_LOG_FILE"; rm -f "$RUN_FILE"' EXIT
+exec > >(tee -a "$TEMP_LOG_FILE" >> "$LOG_FILE") 2>&1
+
+declare -A MOVED_FROM_TO_GB
+declare -A DISK_SIMULATED_FREE
+declare -A LOGGED_EXCLUSIONS
 TOTAL_MOVED_GB=0
 MOVE_COUNT=0
-declare -A MOVED_FROM_TO_GB
-declare -A DISK_FINAL_FREE_SPACE
+SIMULATED_PROCESSED_PATHS=""
 
-log_message "--- Disk Space Management script starting ---"
-log_message "Session log: $TEMP_LOG_FILE"
+log_msg() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $1"; }
+get_free_gb() { df --output=avail -B1 "$1" | tail -n 1 | awk '{printf "%.4f", $1 / 1000000000}'; }
+get_folder_size_gb() { du -sb "$1" 2>/dev/null | awk '{printf "%.4f", $1 / 1000000000}'; }
 
-# Load settings from the config file, which will overwrite the defaults if present.
-if [ -f "$CONFIG_FILE" ];
-then
-    source "$CONFIG_FILE"
-    log_message "Configuration loaded from $CONFIG_FILE"
-
-    # Sanitize variables to remove potential carriage returns from Windows-edited files
-    NOTIFY=$(echo "$NOTIFY" | tr -d '\r')
-    DRY_RUN=$(echo "$DRY_RUN" | tr -d '\r')
-else
-    log_message "WARNING: Configuration file not found. Using default settings."
-fi
-
-# Reformat arrays from config, handling empty settings correctly.
-if [ -n "$MOVIE_DIRS" ]; then IFS=',' read -r -a MOVIE_DIRS_ARRAY <<< "$MOVIE_DIRS"; else MOVIE_DIRS_ARRAY=(); fi
-if [ -n "$TV_SHOW_DIRS" ]; then IFS=',' read -r -a TV_SHOW_DIRS_ARRAY <<< "$TV_SHOW_DIRS"; else TV_SHOW_DIRS_ARRAY=(); fi
-if [ -n "$OTHER_DIRS" ]; then IFS=',' read -r -a OTHER_DIRS_ARRAY <<< "$OTHER_DIRS"; else OTHER_DIRS_ARRAY=(); fi
-if [ -n "$EXCLUDED_DISKS" ]; then IFS=',' read -r -a EXCLUDED_DISKS_ARRAY <<< "$EXCLUDED_DISKS"; else EXCLUDED_DISKS_ARRAY=(); fi
-if [ -n "$MOVE_PRIORITY" ]; then IFS=',' read -r -a PRIORITY_ARRAY <<< "$MOVE_PRIORITY"; else PRIORITY_ARRAY=(); fi
-
-# --- Path Validation ---
-log_message "Validating library paths..."
-validate_dirs() {
-    local -n _dirs_in=$1
-    local -n _dirs_out=$2
-    local _category_name=$3
-    _dirs_out=()
-    if [ ${#_dirs_in[@]} -gt 0 ]; then
-        for dir in "${_dirs_in[@]}"; do
-            local dir_trimmed=$(echo "$dir" | xargs) # Trim whitespace
-            if [ -z "$dir_trimmed" ]; then continue; fi
-            
-            local path_exists=false
-            for disk_path in /mnt/disk*; do
-                if [ -d "$disk_path/$dir_trimmed" ]; then
-                    path_exists=true
-                    break
-                fi
-            done
-
-            if [ "$path_exists" = true ]; then
-                log_message "Path validation PASSED for $_category_name path: '$dir_trimmed'"
-                _dirs_out+=("$dir_trimmed")
-            else
-                log_message "WARNING: Path validation FAILED for $_category_name path: '$dir_trimmed'. It will be skipped."
-            fi
-        done
-    fi
-}
-validate_dirs MOVIE_DIRS_ARRAY VALID_MOVIE_DIRS_ARRAY "Movie"
-validate_dirs TV_SHOW_DIRS_ARRAY VALID_TV_SHOW_DIRS_ARRAY "TV Show"
-validate_dirs OTHER_DIRS_ARRAY VALID_OTHER_DIRS_ARRAY "Other"
-# --- End Path Validation ---
-
-# --- Script Logic ---
-LAST_MOVE_SIZE_GB=0
-
-send_notification() {
-    if [ "$NOTIFY" = "true" ]; then
-        /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "ERROR" -d "$1" -l "/Settings/DiskSpaceManagement"
+check_path_safety() {
+    if [[ "$1" == *"/mnt/user/"* ]] || [[ "$2" == *"/mnt/user/"* ]]; then
+        log_msg "CRITICAL SAFETY ERROR: /mnt/user detected in internal paths. Aborting."
+        exit 1
     fi
 }
 
-is_disk_excluded() {
-    local disk_to_check="$1"
-    if [ ${#EXCLUDED_DISKS_ARRAY[@]} -eq 0 ]; then return 1; fi
-    local normalized_disk_to_check="${disk_to_check#/}"
-    for excluded in "${EXCLUDED_DISKS_ARRAY[@]}"; do
-        local normalized_excluded="${excluded#/}"
-        if [[ -z "${normalized_excluded// }" ]]; then continue; fi
-        if [[ "$normalized_disk_to_check" == "$normalized_excluded" ]]; then return 0; fi
-    done
-    return 1
-}
-
-get_folder_size_gb() {
-    local folder_path="$1"
-    local size_bytes
-    # Get total size in bytes using 'du -sb'.
-    size_bytes=$(du -sb "$folder_path" 2>/dev/null | awk '{print $1}')
-
-    # Check if we got a valid number.
-    if ! [[ "$size_bytes" =~ ^[0-9]+$ ]]; then
-        echo "0"
-        return
-    fi
-
-    # Calculate GB using awk for floating point math (1 GB = 1,000,000,000 Bytes).
-    awk -v bytes="$size_bytes" 'BEGIN { printf "%.4f", bytes / 1000000000 }'
-}
-
-# Gets disk free space in GB (10^9 bytes), consistent with Unraid's UI.
-get_disk_free_gb() {
-    local disk_path="$1"
-    local free_bytes
-    # Get available space in bytes from df. Use -B1 for byte-count.
-    # Use tail -n 1 to get just the number, skipping the header.
-    free_bytes=$(df --output=avail -B1 "$disk_path" 2>/dev/null | tail -n 1)
-    
-    # Check if we got a valid number.
-    if ! [[ "$free_bytes" =~ ^[0-9]+$ ]]; then
-        echo "0"
-        return
-    fi
-
-    # Calculate GB using awk for floating point math (1 GB = 1,000,000,000 Bytes).
-    awk -v bytes="$free_bytes" 'BEGIN { print bytes / 1000000000 }'
-}
-
-is_disk_almost_full() {
-    local base_free_space="$1"
-    local simulated_freed_space=${2:-0}
-    local comparison
-    comparison=$(awk -v cur="$base_free_space" -v sim="$simulated_freed_space" -v thold="$THRESHOLD_GB" 'BEGIN { print (cur + sim < thold) }')
-    if [[ "$comparison" -eq 1 ]]; then return 0; else return 1; fi
+refresh_user_share() {
+    local full_dst="$1"
+    local user_parent=$(dirname "$full_dst" | sed 's|^/mnt/disk[0-9]*/|/mnt/user/|')
+    [ -d "$user_parent" ] && touch "${user_parent}/.dsm_update" && rm "${user_parent}/.dsm_update"
 }
 
 find_target_disk() {
-    local source_disk="$1"
-    local best_disk=""
-    local max_free_space=0
-    
-    # Iterate over all mounted data disks to find the one with the most free space.
-    for disk_path in /mnt/disk[0-9]*; do
-        # Skip if not a directory (e.g. pattern doesn't match anything)
-        [ -d "$disk_path" ] || continue
-
-        local free_space_gb
-        free_space_gb=$(get_disk_free_gb "$disk_path")
-        
-        if ! [[ "$free_space_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then continue; fi
-        if [[ "$disk_path" == "$source_disk" ]]; then continue; fi
-        if is_disk_excluded "$disk_path"; then continue; fi
-        
-        local is_greater
-        is_greater=$(awk -v f1="$free_space_gb" -v f2="$max_free_space" 'BEGIN { print (f1 > f2) }')
-        
-        if [ "$is_greater" -eq 1 ]; then
-            max_free_space=$free_space_gb
-            best_disk=$disk_path
-        fi
+    local src="$1" local best="" local max=0 local exclusions="$2"
+    for disk in /mnt/disk[0-9]*; do
+        [[ "$disk" == "$src" ]] || [[ ",$EXCLUDED_DISKS," == *",$disk,"* ]] || [[ ",$exclusions," == *",$disk,"* ]] && continue
+        local free=${DISK_SIMULATED_FREE[$(basename "$disk")]}
+        if (( $(echo "$free > $max" | bc -l) )); then max=$free; best=$disk; fi
     done
-    echo "$best_disk"
+    echo "$best"
 }
 
-move_folder_rsync() {
-    local source_path="$1"
-    local target_dir="$2"
-    local source_folder_name
-    source_folder_name=$(basename "$source_path")
-    local full_target_path="$target_dir/$source_folder_name"
-    LAST_MOVE_SIZE_GB=0
-    
-    local folder_size_gb
-    folder_size_gb=$(get_folder_size_gb "$source_path")
-    LAST_MOVE_SIZE_GB=$folder_size_gb
+for disk in /mnt/disk[0-9]*; do DISK_SIMULATED_FREE[$(basename "$disk")]=$(get_free_gb "$disk"); done
+IFS='|' read -r -a PATH_ARRAY <<< "$MANAGED_PATHS"
 
-    if [ "$DRY_RUN" = "true" ]; then
-        log_message "[DRY RUN] Would move: '$source_path' ($folder_size_gb GB) to '$full_target_path'"
-        return 0
-    fi
-    
-    if [[ ! -d "$target_dir" ]]; then
-        log_message "Creating target directory: $target_dir"
-        mkdir -p "$target_dir"
-        chown nobody:users "$target_dir"
-    fi
+log_msg "--- Disk Space Management: Execution Started ---"
+log_msg "Threshold set to: ${THRESHOLD_GB}GB"
+[ "$DRY_RUN" == "true" ] && log_msg "*** DRY RUN MODE ENABLED ***"
 
-    log_message "Preparing to move: '$source_path' ($folder_size_gb GB) to '$full_target_path'"
-    
-    if rsync -aH --remove-source-files "$source_path/" "$full_target_path/"; then
-        log_message "Successfully moved '$source_path' to '$full_target_path'"
-        rm -rf "$source_path"
-
-        # --- BEGIN FIX for User Share Caching Issue ---
-        # Force the UserFS to update its cache by touching a temp file in the parent directory.
-        # This makes the moved file immediately visible on the /mnt/user share.
-        local user_share_parent_dir
-        user_share_parent_dir=$(dirname "$full_target_path" | sed 's|^/mnt/disk[0-9]*/|/mnt/user/|')
-        
-        if [ -d "$user_share_parent_dir" ]; then
-            log_message "Triggering User Share cache update for '$user_share_parent_dir'"
-            touch "${user_share_parent_dir}/.dsm_update" && rm "${user_share_parent_dir}/.dsm_update"
-        fi
-        # --- END FIX ---
-
-        return 0
-    else
-        log_message "ERROR: rsync failed to move '$source_path'. See rsync output above."
-        send_notification "ERROR: rsync failed to move '$source_path'."
-        return 1
-    fi
-}
-
-if [ "$DRY_RUN" = "true" ]; then
-    log_message "*** DRY RUN MODE ENABLED *** No files will be moved."
-fi
-
-mounted_disks=$(df | grep '/mnt/disk[0-9]\+' | awk '{print $NF}' | sort)
-for disk in $mounted_disks;
-do
-    if is_disk_excluded "$disk"; then
-        log_message "Skipping excluded disk: $disk"
+for disk in /mnt/disk[0-9]*; do
+    D_NAME=$(basename "$disk")
+    if [[ ",$EXCLUDED_DISKS," == *",$disk,"* ]]; then
+        log_msg "Skipping disk $D_NAME: Globally excluded."
         continue
     fi
-    
-    initial_free_space=$(get_disk_free_gb "$disk")
-    if ! is_disk_almost_full "$initial_free_space"; then
-        continue
-    fi
-    
-    if ! [[ "$initial_free_space" =~ ^[0-9]+([.][0-9]+)?$ ]]; then initial_free_space="0"; fi
-    log_message "Disk $disk is below the ${THRESHOLD_GB}GB threshold (initial space: ${initial_free_space}GB). Planning moves..."
 
-    # --- Dynamic Item List Generation ---
-    SORTED_MASTER_LIST=""
-    PRIORITY_COUNTER=1
-    for CATEGORY in "${PRIORITY_ARRAY[@]}"; do
-        CATEGORY_DIRS_ARRAY_NAME=""
-        SORT_ORDER=""
-        case "$CATEGORY" in
-            "movies")
-                CATEGORY_DIRS_ARRAY_NAME="VALID_MOVIE_DIRS_ARRAY"
-                SORT_ORDER="$MOVIE_SORT_ORDER"
-                ;;
-            "tv")
-                CATEGORY_DIRS_ARRAY_NAME="VALID_TV_SHOW_DIRS_ARRAY"
-                SORT_ORDER="$TV_SORT_ORDER"
-                ;;
-            "other")
-                CATEGORY_DIRS_ARRAY_NAME="VALID_OTHER_DIRS_ARRAY"
-                SORT_ORDER="$OTHER_SORT_ORDER"
-                ;;
-            *)
-                continue
-                ;;
-        esac
-        
-        declare -n DIRS_ARRAY="$CATEGORY_DIRS_ARRAY_NAME"
-        if [ ${#DIRS_ARRAY[@]} -eq 0 ]; then continue; fi
-
-        UNSORTED_CATEGORY_LIST=$(
-            for dir in "${DIRS_ARRAY[@]}"; do
-                find "$disk/$dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | while IFS= read -r -d '' folder; do
-                    SECONDARY_SORT_KEY=""
-                    case "$SORT_ORDER" in
-                        "alphabetical"|"alphabetical_reversed")
-                            SECONDARY_SORT_KEY=$(basename "$folder")
-                            ;;
-                        "smallest")
-                            SECONDARY_SORT_KEY=$(get_folder_size_gb "$folder")
-                            ;;
-                        "newest"|"oldest")
-                            SECONDARY_SORT_KEY=$(stat -c %Y "$folder" 2>/dev/null || echo 0)
-                            ;;
-                        "random")
-                            SECONDARY_SORT_KEY=$RANDOM
-                            ;;
-                        "fewest_seasons")
-                            if [ "$CATEGORY" == "tv" ]; then
-                                SECONDARY_SORT_KEY=$(find "$folder" -mindepth 1 -maxdepth 1 -type d | wc -l)
-                            else
-                                SECONDARY_SORT_KEY=0
-                            fi
-                            ;;
-                        *)
-                            SECONDARY_SORT_KEY=0
-                            ;;
-                    esac
-                    echo "$SECONDARY_SORT_KEY|$folder|$dir"
-                done
-            done
-        )
-        
-        if [[ -z "$UNSORTED_CATEGORY_LIST" ]]; then continue; fi
-        
-        SORT_FLAGS=""
-        case "$SORT_ORDER" in
-            "smallest"|"oldest"|"fewest_seasons"|"random")
-                SORT_FLAGS="-k1,1n"
-                ;;
-            "newest")
-                SORT_FLAGS="-k1,1nr"
-                ;;
-            "alphabetical")
-                SORT_FLAGS="-k1,1f"
-                ;;
-            "alphabetical_reversed")
-                SORT_FLAGS="-k1,1fr"
-                ;;
-        esac
-        
-        SORTED_CATEGORY_LIST=$(echo "$UNSORTED_CATEGORY_LIST" | sort -t '|' $SORT_FLAGS)
-        
-        if [ -n "$SORTED_CATEGORY_LIST" ]; then
-            SORTED_MASTER_LIST+=$(echo -e "$SORTED_CATEGORY_LIST" | sed "s/^/$PRIORITY_COUNTER|/")
-            SORTED_MASTER_LIST+=$'\n'
-        fi
-        
-        ((PRIORITY_COUNTER++))
-    done
-
-    if [[ -z "$SORTED_MASTER_LIST" ]]; then
-        log_message "No movable files found on $disk in any of the configured valid library paths."
-        continue
-    fi
-    
-    simulated_freed_space_gb=0
-    total_moved_from_this_disk=0
-    target_disk=$(find_target_disk "$disk")
-    
-    if [[ -z "$target_disk" ]]; then
-        log_message "No suitable target disk found for source $disk."
-        continue
-    fi
-    log_message "Best target disk found: $target_disk"
-
-    while IFS='|' read -r priority sort_key folder_path target_base_dir; do
-        if ! is_disk_almost_full "$initial_free_space" "$simulated_freed_space_gb";
-        then
-            effective_space=$(awk -v cur="$initial_free_space" -v sim="$simulated_freed_space_gb" 'BEGIN { print cur + sim }')
-            log_message "Disk $disk is now above the threshold (effective space: ${effective_space}GB). Halting moves for this disk."
-            break
-        fi
-        if [[ -z "$folder_path" ]]; then continue; fi
-        
-        if move_folder_rsync "$folder_path" "$target_disk/$target_base_dir"; then
-            size_moved_gb=$LAST_MOVE_SIZE_GB
-            simulated_freed_space_gb=$(awk -v cur="${simulated_freed_space_gb:-0}" -v moved="${size_moved_gb:-0}" 'BEGIN { print cur + moved }')
-            
-            TOTAL_MOVED_GB=$(awk -v cur="${TOTAL_MOVED_GB:-0}" -v moved="${size_moved_gb:-0}" 'BEGIN { print cur + moved }')
-            ((MOVE_COUNT++))
-            total_moved_from_this_disk=$(awk -v cur="${total_moved_from_this_disk:-0}" -v moved="${size_moved_gb:-0}" 'BEGIN { print cur + moved }')
-
-            source_disk_name=$(basename "$disk")
-            target_disk_name=$(basename "$target_disk")
-            move_key="${source_disk_name}->${target_disk_name}"
-            
-            current_moved=${MOVED_FROM_TO_GB[$move_key]:-0}
-            MOVED_FROM_TO_GB[$move_key]=$(awk -v cur="${current_moved}" -v moved="${size_moved_gb:-0}" 'BEGIN { print cur + moved }')
-        else
-            if [ "$DRY_RUN" = "false" ]; then
-                log_message "A real move failed. Stopping further moves from $disk."
+    initial_free=$(get_free_gb "$disk")
+    if (( $(echo "$initial_free < $THRESHOLD_GB" | bc -l) )); then
+        log_msg "Disk $D_NAME is below threshold. Free: ${initial_free}GB."
+        while true; do
+            curr_sim_free=${DISK_SIMULATED_FREE[$D_NAME]}
+            if (( $(echo "$curr_sim_free >= $THRESHOLD_GB" | bc -l) )); then
+                log_msg "Disk $D_NAME is now above threshold (${curr_sim_free}GB). Stopping moves."
                 break
             fi
-        fi
-    done <<< "$SORTED_MASTER_LIST"
+            
+            found_move=false
+            for entry in "${PATH_ARRAY[@]}"; do
+                rel_path="${entry%%:*}"; rest="${entry#*:}"; sort_type="${rest%%:*}"; folder_ex="${rest#*:}"
+                if [[ ",$folder_ex," == *",$disk,"* ]]; then
+                    if [[ -z "${LOGGED_EXCLUSIONS[$D_NAME:$rel_path]}" ]]; then
+                        log_msg "Skipping path '$rel_path' on $D_NAME: Disk excluded for this folder."
+                        LOGGED_EXCLUSIONS["$D_NAME:$rel_path"]=1
+                    fi
+                    continue
+                fi
+                target=$(find_target_disk "$disk" "$folder_ex")
+                [ -z "$target" ] && continue
+                source_dir="$disk/$rel_path"
+                [ ! -d "$source_dir" ] && continue
+                item=$(find "$source_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read f; do
+                    if [[ "$SIMULATED_PROCESSED_PATHS" == *"$f|"* ]]; then continue; fi
+                    case "$sort_type" in
+                        "smallest") s=$(du -sb "$f" | awk '{print $1}'); echo "$s|$f" ;;
+                        "oldest"|"newest") t=$(stat -c %Y "$f"); echo "$t|$f" ;;
+                        *) echo "$(basename "$f")|$f" ;;
+                    esac
+                done | case "$sort_type" in
+                    "smallest"|"oldest") sort -n ;;
+                    "newest") sort -rn ;;
+                    *) sort -f ;;
+                esac | head -n 1 | cut -d'|' -f2)
 
-    if [ $(awk -v v1="$total_moved_from_this_disk" -v v2="0" 'BEGIN { print (v1 > v2) }') -eq 1 ]; then
-        source_disk_name=$(basename "$disk")
-        
-        if [ "$DRY_RUN" = "true" ]; then
-            final_free_space=$(awk -v cur="${initial_free_space:-0}" -v moved="${total_moved_from_this_disk:-0}" 'BEGIN { print cur + moved }')
-        else
-            log_message "Performing final free space measurement for $disk..."
-            sync
-            sleep 2
-            final_free_space=$(get_disk_free_gb "$disk")
-        fi
-        
-        DISK_FINAL_FREE_SPACE[$source_disk_name]=$final_free_space
+                if [ -n "$item" ]; then
+                    size=$(get_folder_size_gb "$item")
+                    dst="$target/$rel_path/$(basename "$item")"
+                    check_path_safety "$item" "$dst"
+                    if [ "$DRY_RUN" == "true" ]; then 
+                        log_msg "[DRY RUN] Would move: '$item' ($size GB) to '$dst'"
+                        SIMULATED_PROCESSED_PATHS+="$item|"
+                    else 
+                        log_msg "Moving: '$item' ($size GB) to '$dst'"
+                        mkdir -p "$(dirname "$dst")"
+                        if rsync -aH --remove-source-files "$item/" "$dst/"; then
+                            if [ -z "$(ls -A "$item")" ]; then rm -rf "$item"; refresh_user_share "$dst"; fi
+                        fi
+                    fi
+                    TOTAL_MOVED_GB=$(echo "$TOTAL_MOVED_GB + $size" | bc -l); ((MOVE_COUNT++))
+                    DISK_SIMULATED_FREE[$D_NAME]=$(echo "${DISK_SIMULATED_FREE[$D_NAME]} + $size" | bc -l)
+                    DISK_SIMULATED_FREE[$(basename "$target")]=$(echo "${DISK_SIMULATED_FREE[$(basename "$target")]} - $size" | bc -l)
+                    key="${D_NAME}->$(basename "$target")"; MOVED_FROM_TO_GB[$key]=$(echo "${MOVED_FROM_TO_GB[$key]:-0} + $size" | bc -l)
+                    found_move=true; break
+                fi
+            done
+            [ "$found_move" = false ] && break
+        done
     fi
 done
 
-# --- Final Summary and Notification ---
+log_msg "--- Disk Space Management: Execution Finished ---"
 SCRIPT_END_TIME=$(date +"%Y-%m-%d %H:%M:%S")
-log_message "--- Disk Space Management script finished ---"
 
 if [ "$NOTIFY" = "true" ]; then
-    ui_message_body=""
-    agent_message_body=""
-
-    if [ "$MOVE_COUNT" -gt 0 ]; then
-        s_char="s"; [ "$MOVE_COUNT" -eq 1 ] && s_char=""
-        
-        TOTAL_MOVED_GB_ROUNDED=$(printf "%.0f" "$TOTAL_MOVED_GB")
-        
-        disk_summary_html=""
-        for key in "${!MOVED_FROM_TO_GB[@]}"; do
-            source=${key%->*}
-            target=${key#*->}
-            total_gb=$(printf "%.0f" "${MOVED_FROM_TO_GB[$key]}")
-            final_space=$(printf "%.0f" "${DISK_FINAL_FREE_SPACE[$source]}")
-            disk_summary_html+=$(printf -- " - Moved %sGB from %s to %s. New free space on %s is %sGB.<br>" "$total_gb" "$source" "$target" "$source" "$final_space")
-        done
-        
-        ui_message_body=$(printf "Run finished. Total moved: %sGB in %d item%s.<br><br>" "$TOTAL_MOVED_GB_ROUNDED" "$MOVE_COUNT" "$s_char")
-        if [ "$DRY_RUN" = "true" ]; then
-            ui_message_body+="<b>DRY RUN: No files were actually moved.</b><br><br>"
-        fi
-        ui_message_body+=$(printf "Start: %s<br>End:   %s<br><br><b>--- Disk Summary ---</b><br>%s" \
-                             "$SCRIPT_START_TIME" "$SCRIPT_END_TIME" "$disk_summary_html")
-
-        agent_message_body=$(
-            if [ "$DRY_RUN" = "true" ]; then
-                echo -e "DRY RUN: No files were actually moved.\n"
-            fi
-            echo -e "Start: $SCRIPT_START_TIME\nEnd:   $SCRIPT_END_TIME\n"
-            echo -e "--- Disk Summary ---"
-            for key in "${!MOVED_FROM_TO_GB[@]}"; do
-                source=${key%->*}
-                target=${key#*->}
-                total_gb=$(printf "%.0f" "${MOVED_FROM_TO_GB[$key]}")
-                final_space=$(printf "%.0f" "${DISK_FINAL_FREE_SPACE[$source]}")
-                printf -- " - Moved %sGB from %s to %s. New free space on %s is %sGB.\n" "$total_gb" "$source" "$target" "$source" "$final_space"
-            done
-        )
-    else
-        ui_message_body=$(printf "Run finished. No files were moved.<br>Start: %s<br>End:   %s" \
-                             "$SCRIPT_START_TIME" "$SCRIPT_END_TIME")
-        agent_message_body=$(printf "Run finished. No files were moved.\n\nStart: %s\nEnd:   %s" \
-                                 "$SCRIPT_START_TIME" "$SCRIPT_END_TIME")
-    fi
-
-    agent_message_body+=$'\n\n--- Log Snippet (Last 200 Lines) ---\n'
-    agent_message_body+=$(tail -n 200 "$TEMP_LOG_FILE")
-    
-    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "Run Summary" -d "$ui_message_body" -m "$agent_message_body"
+    ui_body="Run finished. Total moved: $(printf "%.2f" "$TOTAL_MOVED_GB")GB in $MOVE_COUNT items.<br><br>"; [ "$DRY_RUN" == "true" ] && ui_body+="<b>DRY RUN: No files moved.</b><br>"; ui_body+="Start: $SCRIPT_START_TIME<br>End: $SCRIPT_END_TIME<br><br><b>Disk Summary:</b><br>"
+    agent_msg="DSM Summary\nTotal: $(printf "%.2f" "$TOTAL_MOVED_GB")GB\n"
+    for k in "${!MOVED_FROM_TO_GB[@]}"; do src=${k%->*}; total=${MOVED_FROM_TO_GB[$k]}; final=${DISK_SIMULATED_FREE[$src]}; ui_body+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB.<br>"; agent_msg+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB\n"; done
+    agent_msg+="\n--- Log (First 200 lines) ---\n$(head -n 200 "$TEMP_LOG_FILE")"
+    /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "Run Summary" -d "$ui_body" -m "$agent_msg"
 fi
-
-cat "$TEMP_LOG_FILE" >> "$LOG_FILE"
 ]]>
 </INLINE>
 </FILE>
 
 <EXEC>
-if [ ! -f "&plugdir;/settings.cfg" ]; then
-  /bin/mkdir -p &plugdir;
-  (
-    echo 'THRESHOLD_GB="50"'
-    echo 'DRY_RUN="true"'
-    echo 'LOG_FILE="/var/log/diskspacemanagement.log"'
-    echo 'MOVIE_DIRS="media/Movies"'
-    echo 'TV_SHOW_DIRS="media/TV"'
-    echo 'OTHER_DIRS="media/Other"'
-    echo 'EXCLUDED_DISKS=""'
-    echo 'NOTIFY="true"'
-    echo 'CRON_SCHEDULE="0 3 * * *"'
-    echo 'MOVIE_SORT_ORDER="smallest"'
-    echo 'TV_SORT_ORDER="fewest_seasons"'
-    echo 'OTHER_SORT_ORDER="smallest"'
-    echo 'MOVE_PRIORITY="movies,tv,other"'
-  ) > &plugdir;/settings.cfg
+<![CDATA[
+CFG="&plugdir;/settings.cfg"
+if [ ! -f "$CFG" ]; then
+  mkdir -p &plugdir;
+  echo 'THRESHOLD_GB="50"
+DRY_RUN="true"
+LOG_FILE="/var/log/diskspacemanagement.log"
+NOTIFY="true"
+MANAGED_PATHS=""
+EXCLUDED_DISKS=""
+CRON_SCHEDULE="0 3 * * *"' > "$CFG"
 fi
+]]>
 </EXEC>
-
-<FILE Run="/bin/bash">
-<INLINE>
-echo
-echo "----------------------------------------------------"
-echo " &name; version &version; has been installed."
-echo " To configure, go to Settings > &name;"
-echo "----------------------------------------------------"
-echo
-</INLINE>
-</FILE>
-
-<FILE Run="/bin/bash" Method="remove">
-<INLINE>
-echo "Uninstalling &name;..."
-# Remove the main plugin directory from RAM
-rm -rf /usr/local/emhttp/plugins/&name;
-# Remove the plugin's cron file
-rm -f /boot/config/plugins/dynamix/&name;.cron
-# Force dynamix to rebuild the crontab
-update_cron
-echo "&name; has been successfully removed."
-</INLINE>
-</FILE>
-
 </PLUGIN>
