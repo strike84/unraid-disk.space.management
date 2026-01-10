@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2026.01.07">
+<!ENTITY version "2026.01.09">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -50,6 +50,10 @@ if (function_exists('render_dsm_ui')) {
 <INLINE>
 <![CDATA[
 # Changelog
+## 2026.01.09
+- Script: Logs and skips files that are in use/locked or returns a 0 in size which causes the Infinite loop.
+- Fixed display issues triggering the "mobile" view on laptops and unraid version before 7.2.
+
 ## 2026.01.07
 - Feature: Added "Stop Script" button to Logs tab for graceful termination.
 - Script: Fixed "Broken pipe" and "sort: write error" in logs.
@@ -146,7 +150,7 @@ if (function_exists('render_dsm_ui')) {
 define('PLUGIN_NAME', 'DiskSpaceManagement');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-define('PLUGIN_VERSION', '2026.01.07');
+define('PLUGIN_VERSION', '2026.01.09');
 
 if (!isset($var)) {
     $var = parse_ini_file('/var/local/emhttp/var.ini');
@@ -237,7 +241,7 @@ function render_dsm_ui() {
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .dsm-grid { display: grid; grid-template-columns: 340px 1fr 340px; gap: 20px; align-items: stretch; }
-        @media (max-width: 1100px) { .dsm-grid { grid-template-columns: 1fr; } .dsm-col { margin-bottom: 20px; } }
+        @media (max-width: 900px) { .dsm-grid { grid-template-columns: 1fr; } .dsm-col { margin-bottom: 20px; } }
         .dsm-col { display: flex; flex-direction: column; height: 100%; }
         .dsm-card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 25px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
         .dsm-card-title { font-size: 1.1em; font-weight: 600; margin-bottom: 15px; color: #ff8c2f; border-bottom: 1px solid #333; padding-bottom: 12px; display: flex; align-items: center; gap: 10px; }
@@ -621,6 +625,7 @@ exec > >(tee -a "$TEMP_LOG_FILE" >> "$LOG_FILE") 2>&1
 
 declare -A MOVED_FROM_TO_GB
 declare -A DISK_SIMULATED_FREE
+declare -A SKIPPED_PATHS
 TOTAL_MOVED_GB=0
 MOVE_COUNT=0
 SIMULATED_PROCESSED_PATHS=""
@@ -628,7 +633,18 @@ SIMULATED_PROCESSED_PATHS=""
 log_msg() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $1"; }
 
 get_free_gb() { df --output=avail -B1 "$1" | tail -n 1 | awk '{printf "%.4f", $1 / 1000000000}'; }
-get_folder_size_gb() { du -sb "$1" 2>/dev/null | awk '{printf "%.4f", $1 / 1000000000}'; }
+
+# Fallback size calculation: tries 'du -sb' first, then 'du -sB1' if that fails
+get_folder_size_gb() { 
+    local raw_size
+    raw_size=$(du -sb "$1" 2>/dev/null | awk '{print $1}')
+    if [ -z "$raw_size" ]; then
+        raw_size=$(du -sB1 "$1" 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -n "$raw_size" ]; then
+        echo "$raw_size" | awk '{printf "%.4f", $1 / 1000000000}'
+    fi
+}
 
 check_path_safety() {
     if [[ "$1" == *"/mnt/user/"* ]] || [[ "$2" == *"/mnt/user/"* ]]; then
@@ -685,6 +701,8 @@ for disk in /mnt/disk[0-9]*; do
                 [ -z "$target" ] && continue
                 source_dir="$disk/$rel_path"
                 [ ! -d "$source_dir" ] && continue
+                
+                # Selection Logic: Validates sorting for all 5 types
                 item=$(find "$source_dir" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read f; do
                     [[ "$SIMULATED_PROCESSED_PATHS" == *"$f|"* ]] && continue
                     case "$sort_type" in
@@ -695,29 +713,62 @@ for disk in /mnt/disk[0-9]*; do
                 done | case "$sort_type" in
                     "smallest"|"oldest") sort -n 2>/dev/null ;;
                     "newest") sort -rn 2>/dev/null ;;
+                    "alphabetical_reversed") sort -rf 2>/dev/null ;;
                     *) sort -f 2>/dev/null ;;
                 esac | head -n 1 | cut -d'|' -f2)
 
                 if [ -n "$item" ]; then
                     size=$(get_folder_size_gb "$item")
+                    
+                    # SAFETY CHECK: If size is missing or 0, skip to prevent infinite loop
+                    if [ -z "$size" ] || [ "$size" == "0.0000" ]; then
+                        log_msg "WARNING: Unable to determine size of '$item'. File might be in use/locked. Skipping to avoid loop."
+                        SIMULATED_PROCESSED_PATHS+="$item|"
+                        SKIPPED_PATHS["$item"]=1
+                        continue
+                    fi
+
                     dst="$target/$rel_path/$(basename "$item")"
                     check_path_safety "$item" "$dst"
                     if [ "$DRY_RUN" == "true" ]; then 
                         log_msg "[DRY RUN] Would move: '$item' ($size GB) to '$dst'"
                         SIMULATED_PROCESSED_PATHS+="$item|"
+                        TOTAL_MOVED_GB=$(awk -v cur="$TOTAL_MOVED_GB" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                        ((MOVE_COUNT++))
+                        DISK_SIMULATED_FREE[$D_NAME]=$(awk -v cur="${DISK_SIMULATED_FREE[$D_NAME]}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                        DISK_SIMULATED_FREE[$(basename "$target")]=$(awk -v cur="${DISK_SIMULATED_FREE[$(basename "$target")]}" -v sz="$size" 'BEGIN { printf "%.4f", cur - sz }')
+                        key="${D_NAME}->$(basename "$target")"; MOVED_FROM_TO_GB[$key]=$(awk -v cur="${MOVED_FROM_TO_GB[$key]:-0}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                        found_move=true; break
                     else 
                         log_msg "Moving: '$item' ($size GB) to '$dst'"
                         mkdir -p "$(dirname "$dst")"
                         if rsync -aH --remove-source-files "$item/" "$dst/"; then
-                            if [ -z "$(ls -A "$item")" ]; then rm -rf "$item"; refresh_user_share "$dst"; fi
+                            
+                            # Cleanup: Remove empty subdirectories left by rsync --remove-source-files
+                            find "$item" -mindepth 1 -type d -empty -delete 2>/dev/null
+                            
+                            if [ -z "$(ls -A "$item")" ]; then 
+                                if rm -rf "$item"; then
+                                    refresh_user_share "$dst"
+                                else
+                                    log_msg "ERROR: Failed to remove empty source folder '$item'."
+                                fi
+                            else
+                                log_msg "WARNING: Source folder '$item' not removed. It contains leftover files."
+                            fi
+
+                            TOTAL_MOVED_GB=$(awk -v cur="$TOTAL_MOVED_GB" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                            ((MOVE_COUNT++))
+                            DISK_SIMULATED_FREE[$D_NAME]=$(awk -v cur="${DISK_SIMULATED_FREE[$D_NAME]}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                            DISK_SIMULATED_FREE[$(basename "$target")]=$(awk -v cur="${DISK_SIMULATED_FREE[$(basename "$target")]}" -v sz="$size" 'BEGIN { printf "%.4f", cur - sz }')
+                            key="${D_NAME}->$(basename "$target")"; MOVED_FROM_TO_GB[$key]=$(awk -v cur="${MOVED_FROM_TO_GB[$key]:-0}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
+                            found_move=true; break
+                        else
+                             log_msg "ERROR: Failed to move '$item'. File might be in use/locked. Skipping to avoid loop."
+                             SIMULATED_PROCESSED_PATHS+="$item|"
+                             SKIPPED_PATHS["$item"]=1
                         fi
                     fi
-                    TOTAL_MOVED_GB=$(awk -v cur="$TOTAL_MOVED_GB" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
-                    ((MOVE_COUNT++))
-                    DISK_SIMULATED_FREE[$D_NAME]=$(awk -v cur="${DISK_SIMULATED_FREE[$D_NAME]}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
-                    DISK_SIMULATED_FREE[$(basename "$target")]=$(awk -v cur="${DISK_SIMULATED_FREE[$(basename "$target")]}" -v sz="$size" 'BEGIN { printf "%.4f", cur - sz }')
-                    key="${D_NAME}->$(basename "$target")"; MOVED_FROM_TO_GB[$key]=$(awk -v cur="${MOVED_FROM_TO_GB[$key]:-0}" -v sz="$size" 'BEGIN { printf "%.4f", cur + sz }')
-                    found_move=true; break
                 fi
             done
             [ "$found_move" = false ] && break
@@ -728,12 +779,27 @@ done
 log_msg "--- Disk Space Management: Execution Finished ---"
 SCRIPT_END_TIME=$(date +"%Y-%m-%d %H:%M:%S")
 if [ "$NOTIFY" = "true" ]; then
-    ui_body="Run finished. Total moved: $(printf "%.2f" "$TOTAL_MOVED_GB")GB in $MOVE_COUNT items.<br><br>"; [ "$DRY_RUN" == "true" ] && ui_body+="<b>DRY RUN: No files moved.</b><br>"; ui_body+="Start: $SCRIPT_START_TIME<br>End: $SCRIPT_END_TIME<br><br><b>Disk Summary:</b><br>"
+    ui_body="Run finished. Total moved: $(printf "%.2f" "$TOTAL_MOVED_GB")GB in $MOVE_COUNT items.<br><br>";
+    [ "$DRY_RUN" == "true" ] && ui_body+="<b>DRY RUN: No files moved.</b><br>";
+    ui_body+="Start: $SCRIPT_START_TIME<br>End: $SCRIPT_END_TIME<br><br><b>Disk Summary:</b><br>"
     agent_msg="DSM Summary\nTotal: $(printf "%.2f" "$TOTAL_MOVED_GB")GB\n"
-    for k in "${!MOVED_FROM_TO_GB[@]}"; do src=${k%->*}; total=${MOVED_FROM_TO_GB[$k]}; final=${DISK_SIMULATED_FREE[$src]}; ui_body+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB.<br>"; agent_msg+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB\n"; done
+    for k in "${!MOVED_FROM_TO_GB[@]}"; do src=${k%->*}; total=${MOVED_FROM_TO_GB[$k]}; final=${DISK_SIMULATED_FREE[$src]}; ui_body+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB.<br>";
+    agent_msg+=" - $k: $(printf "%.2f" "$total")GB. New free: $(printf "%.2f" "$final")GB\n"; done
+    
+    # Add Failed/Skipped items to notification
+    if [ "${#SKIPPED_PATHS[@]}" -gt 0 ]; then
+        ui_body+="<br><b>Skipped paths (Size 0/Error):</b><br>"
+        agent_msg+="\nSkipped paths (Size 0/Error):\n"
+        for p in "${!SKIPPED_PATHS[@]}"; do
+            ui_body+="$p<br>"
+            agent_msg+="$p\n"
+        done
+    fi
+
     agent_msg+="\n--- Log (First 200 lines) ---\n$(head -n 200 "$TEMP_LOG_FILE")"
     /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Disk Space Management" -s "Run Summary" -d "$ui_body" -m "$agent_msg"
 fi
+
 ]]>
 </INLINE>
 </FILE>
