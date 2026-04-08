@@ -1,0 +1,10 @@
+Menu="Utilities"
+Title="Disk Space Management"
+Icon="hdd-o"
+---
+<?php
+require_once('/usr/local/emhttp/plugins/DiskSpaceManagement/engine.php');
+if (function_exists('render_dsm_ui')) {
+    render_dsm_ui();
+}
+?>
