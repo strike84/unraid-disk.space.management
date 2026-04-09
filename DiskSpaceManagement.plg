@@ -2,7 +2,7 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "DiskSpaceManagement">
 <!ENTITY author "strike">
-<!ENTITY version "2026.04.08">
+<!ENTITY version "2026.04.09">
 <!ENTITY launch "Settings/DiskSpaceManagement">
 <!ENTITY plugdir "/boot/config/plugins/&name;">
 <!ENTITY pluginURL "https://raw.githubusercontent.com/strike84/unraid-disk.space.management/refs/heads/main/DiskSpaceManagement.plg">
@@ -50,6 +50,9 @@ if (function_exists('render_dsm_ui')) {
 <INLINE>
 <![CDATA[
 # Changelog
+## 2026.04.09
+- Feature/Script: Added check to ensure target disk has enough free space to fit the folder being moved. If space is insufficient, a warning is logged and the script moves on to the next configured path.
+
 ## 2026.04.08
 - Script/UI: Fixed an issue on Unraid 7.3.0 beta where saving settings failed with an "AJAX Save Failed" (HTTP 500 or 403 Forbidden) error due to PHP 8.4 changes to `parse_ini_file` and changes to session-based CSRF tokens.
 - UI: Fixed a secondary issue where Unraid's PageRenderer prepended HTML to the AJAX response, preventing the success confirmation from displaying.
@@ -158,7 +161,7 @@ if (function_exists('render_dsm_ui')) {
 define('PLUGIN_NAME', 'DiskSpaceManagement');
 define('CONFIG_PATH', '/boot/config/plugins/' . PLUGIN_NAME);
 define('CONFIG_FILE', CONFIG_PATH . '/settings.cfg');
-define('PLUGIN_VERSION', '2026.04.08');
+define('PLUGIN_VERSION', '2026.04.09');
 
 if (!isset($var)) {
     $var = @parse_ini_file('/var/local/emhttp/var.ini', false, INI_SCANNER_RAW) ?: [];
@@ -1019,6 +1022,13 @@ for disk in /mnt/disk[0-9]*; do
                         # ----------------------------------------------------------------
                         # VALID FOLDER FOUND - Proceed with move
                         # ----------------------------------------------------------------
+                        target_free=${DISK_SIMULATED_FREE[$(basename "$target")]}
+                        has_space=$(awk -v free="$target_free" -v sz="$size" 'BEGIN { print (free >= sz) }')
+                        if [ "$has_space" -eq 0 ]; then
+                            log_msg "WARNING: Folder '$item' ($size GB) won't fit on target disk $(basename "$target") (${target_free} GB free). Please change your moving sorting order or add more drives to get more space. Skipping to next configured path."
+                            continue
+                        fi
+
                         dst="$target/$rel_path/$(basename "$item")"
                         check_path_safety "$item" "$dst"
                         
